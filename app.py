@@ -40,7 +40,7 @@ def home():
 @app.route("/euromillions")
 def euromillions():
     try:
-        payload = euro.build_dashboard_payload()
+        payload = euro.build_dashboard_data()
         html = euro.render_html(payload)
         return Response(html, mimetype="text/html")
     except Exception:
