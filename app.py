@@ -1,6 +1,6 @@
 from pathlib import Path
 from flask import Flask, Response
-import euromillions_live_dashboard_v2 as euro
+import euromillions_live_dashboard as euro
 
 # Override file locations so the app works from the repo root on Render
 BASE = Path(__file__).resolve().parent
