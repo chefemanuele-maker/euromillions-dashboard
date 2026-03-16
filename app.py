@@ -1,8 +1,16 @@
+from pathlib import Path
 from flask import Flask, Response
 import traceback
 import euromillions_live_dashboard as euro
 
 app = Flask(__name__)
+
+# Adatta i percorsi per Render/repo
+BASE = Path(__file__).resolve().parent
+euro.BASE_DIR = BASE
+euro.LOCAL_HISTORY = BASE / "euromillions_history_live.csv"
+euro.USER_ORIGINAL = BASE / "euromillions_export_2026-03-16.csv"
+euro.ensure_base_dir = lambda: None
 
 @app.route("/")
 def home():
@@ -40,8 +48,9 @@ def home():
 @app.route("/euromillions")
 def euromillions():
     try:
-        payload = euro.build_dashboard_data()
-        html = euro.render_html(payload)
+        df, refresh = euro.refresh_history()
+        data = euro.build_dashboard_data(df)
+        html = euro.render_dashboard(data, refresh)
         return Response(html, mimetype="text/html")
     except Exception:
         err = traceback.format_exc()
