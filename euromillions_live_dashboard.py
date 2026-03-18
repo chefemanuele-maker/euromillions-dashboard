@@ -10,6 +10,7 @@ import html
 import datetime as dt
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -309,7 +310,6 @@ def _extract_json_array(script_text: str, key_patterns: List[str]) -> Optional[L
 
 def parse_official_html_backup(text: str) -> pd.DataFrame:
     scripts = re.findall(r"<script[^>]*>(.*?)</script>", text, flags=re.IGNORECASE | re.DOTALL)
-
     candidates = scripts + [text]
 
     for chunk in candidates:
@@ -518,6 +518,40 @@ def top_pattern_tables(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     return odd_even, low_high
 
 
+def get_hot_numbers_last_n(df: pd.DataFrame, n: int = 10) -> pd.DataFrame:
+    recent = df.tail(n)
+    counts = {num: 0 for num in MAIN_RANGE}
+    for _, row in recent.iterrows():
+        for i in range(1, 6):
+            counts[int(row[f"ball_{i}"])] += 1
+
+    rows = [{"number": k, "seen_last_n": v} for k, v in counts.items()]
+    out = pd.DataFrame(rows).sort_values(["seen_last_n", "number"], ascending=[False, True]).reset_index(drop=True)
+    return out.head(10)
+
+
+def get_overdue_numbers(df: pd.DataFrame) -> pd.DataFrame:
+    rank = build_rank_table(df, MAIN_RANGE, [f"ball_{i}" for i in range(1, 6)], "main")
+    return rank.sort_values(["draws_since_seen", "number"], ascending=[False, True]).head(10)[
+        ["number", "draws_since_seen", "times_seen"]
+    ]
+
+
+def get_top_pairs(df: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
+    pair_counts: Dict[Tuple[int, int], int] = {}
+    for _, row in df.iterrows():
+        balls = sorted(int(row[f"ball_{i}"]) for i in range(1, 6))
+        for pair in combinations(balls, 2):
+            pair_counts[pair] = pair_counts.get(pair, 0) + 1
+
+    rows = [
+        {"pair": f"{a:02d} {b:02d}", "count": count}
+        for (a, b), count in pair_counts.items()
+    ]
+    out = pd.DataFrame(rows).sort_values(["count", "pair"], ascending=[False, True]).reset_index(drop=True)
+    return out.head(top_n)
+
+
 def weighted_sample_without_replacement(population: Sequence[int], weights: Sequence[float], k: int, rng: random.Random) -> List[int]:
     items = list(population)
     w = list(weights)
@@ -603,7 +637,12 @@ def generate_suggested_lines(df: pd.DataFrame, lines_per_mode: int = 4, seed: in
         "safe": {"top_main": 18, "top_star": 8, "jitter": 0.08},
         "balanced": {"top_main": 28, "top_star": 10, "jitter": 0.18},
         "aggressive": {"top_main": 40, "top_star": 12, "jitter": 0.33},
+        "anti_last_draw": {"top_main": 32, "top_star": 12, "jitter": 0.20},
     }
+
+    last_row = df.iloc[-1]
+    last_balls = {int(last_row[f"ball_{i}"]) for i in range(1, 6)}
+    last_stars = {int(last_row["lucky_star_1"]), int(last_row["lucky_star_2"])}
 
     rows: List[Dict[str, object]] = []
     used = set()
@@ -623,12 +662,18 @@ def generate_suggested_lines(df: pd.DataFrame, lines_per_mode: int = 4, seed: in
             balls = sorted(weighted_sample_without_replacement(main_pool, mw, 5, rng))
             stars = sorted(weighted_sample_without_replacement(star_pool, sw, 2, rng))
 
+            if mode == "anti_last_draw":
+                overlap_balls = len(set(balls) & last_balls)
+                overlap_stars = len(set(stars) & last_stars)
+                if overlap_balls > 1 or overlap_stars > 0:
+                    continue
+
             odd = sum(n % 2 for n in balls)
             low = sum(n <= 25 for n in balls)
             if abs(odd - 2.5) > 2 or abs(low - 2.5) > 2:
                 continue
 
-            key = tuple(balls + [-1] + stars)
+            key = tuple([mode] + balls + [-1] + stars)
             if key in used:
                 continue
 
@@ -656,7 +701,10 @@ def generate_suggested_lines(df: pd.DataFrame, lines_per_mode: int = 4, seed: in
             made += 1
 
     out = pd.DataFrame(rows).sort_values(["mode", "score"], ascending=[True, False]).reset_index(drop=True)
-    mode_order = pd.CategoricalDtype(categories=["safe", "balanced", "aggressive"], ordered=True)
+    mode_order = pd.CategoricalDtype(
+        categories=["safe", "balanced", "aggressive", "anti_last_draw"],
+        ordered=True
+    )
     out["mode"] = out["mode"].astype(mode_order)
     out = out.sort_values(["mode", "score"], ascending=[True, False]).reset_index(drop=True)
     out["mode"] = out["mode"].astype(str)
@@ -669,6 +717,7 @@ def choose_best_line(suggested: pd.DataFrame) -> Tuple[Dict[str, object], BestLi
 
     balanced = suggested[suggested["mode"] == "balanced"].sort_values("score", ascending=False)
     safe = suggested[suggested["mode"] == "safe"].sort_values("score", ascending=False)
+    anti = suggested[suggested["mode"] == "anti_last_draw"].sort_values("score", ascending=False)
     aggressive = suggested[suggested["mode"] == "aggressive"].sort_values("score", ascending=False)
 
     if not balanced.empty:
@@ -683,6 +732,13 @@ def choose_best_line(suggested: pd.DataFrame) -> Tuple[Dict[str, object], BestLi
         return row, BestLineDecision(
             mode="safe",
             reason="Chosen because no balanced line was available, so the model took the strongest conservative line.",
+        )
+
+    if not anti.empty:
+        row = anti.iloc[0].to_dict()
+        return row, BestLineDecision(
+            mode="anti_last_draw",
+            reason="Chosen to reduce overlap with the most recent draw while keeping a strong score.",
         )
 
     row = aggressive.iloc[0].to_dict()
@@ -700,7 +756,6 @@ def build_dashboard_data(df: pd.DataFrame) -> Dict[str, object]:
     hist = enrich_history(df)
     main_rank = build_rank_table(hist, MAIN_RANGE, [f"ball_{i}" for i in range(1, 6)], "main")
     star_rank = build_rank_table(hist, STAR_RANGE, ["lucky_star_1", "lucky_star_2"], "star")
-    odd_even, low_high = top_pattern_tables(hist)
     suggested = generate_suggested_lines(hist)
     best_line, decision = choose_best_line(suggested)
     state = load_refresh_state()
@@ -724,13 +779,15 @@ def build_dashboard_data(df: pd.DataFrame) -> Dict[str, object]:
             "stars": f"{int(row['lucky_star_1']):02d} {int(row['lucky_star_2']):02d}",
         })
 
+    hot_last_10 = get_hot_numbers_last_n(hist, 10).to_dict(orient="records")
+    overdue = get_overdue_numbers(hist).to_dict(orient="records")
+    top_pairs = get_top_pairs(hist, 10).to_dict(orient="records")
+
     return {
         "history_rows": len(hist),
         "latest_draw": latest_draw,
         "main_top10": main_rank.head(10).to_dict(orient="records"),
         "star_top10": star_rank.head(10).to_dict(orient="records"),
-        "odd_even_top": odd_even.head(6).to_dict(orient="records"),
-        "low_high_top": low_high.head(6).to_dict(orient="records"),
         "suggested": suggested.to_dict(orient="records"),
         "best_line": best_line,
         "best_line_reason": decision.reason,
@@ -741,6 +798,9 @@ def build_dashboard_data(df: pd.DataFrame) -> Dict[str, object]:
         "sum_std": round(float(hist["sum_balls"].std(ddof=0) or 0), 2),
         "recent_draws": recent_rows,
         "refresh_state": state,
+        "hot_last_10": hot_last_10,
+        "overdue_numbers": overdue,
+        "top_pairs": top_pairs,
     }
 
 
@@ -754,8 +814,21 @@ def render_table(rows: List[Dict[str, object]], columns: Sequence[Tuple[str, str
 
 
 def mode_chip(mode: str) -> str:
-    cls = "safe" if mode == "safe" else "balanced" if mode == "balanced" else "aggressive"
-    return f'<span class="chip {cls}">{html.escape(mode.upper())}</span>'
+    classes = {
+        "safe": "safe",
+        "balanced": "balanced",
+        "aggressive": "aggressive",
+        "anti_last_draw": "anti",
+    }
+    labels = {
+        "safe": "SAFE",
+        "balanced": "BALANCED",
+        "aggressive": "AGGRESSIVE",
+        "anti_last_draw": "ANTI LAST DRAW",
+    }
+    cls = classes.get(mode, "balanced")
+    label = labels.get(mode, mode.upper())
+    return f'<span class="chip {cls}">{html.escape(label)}</span>'
 
 
 def render_dashboard(data: Dict[str, object], refresh: RefreshResult) -> str:
@@ -778,6 +851,18 @@ def render_dashboard(data: Dict[str, object], refresh: RefreshResult) -> str:
     suggested_table = render_table(
         data["suggested"],
         [("mode", "Mode"), ("balls", "Main numbers"), ("stars", "Stars"), ("sum_balls", "Sum"), ("odd_even", "Odd-Even"), ("low_high", "Low-High"), ("score", "Score")],
+    )
+    hot_last_10_table = render_table(
+        data["hot_last_10"],
+        [("number", "Number"), ("seen_last_n", "Seen in last 10")],
+    )
+    overdue_table = render_table(
+        data["overdue_numbers"],
+        [("number", "Number"), ("draws_since_seen", "Draws since"), ("times_seen", "Total seen")],
+    )
+    top_pairs_table = render_table(
+        data["top_pairs"],
+        [("pair", "Pair"), ("count", "Count")],
     )
 
     status_class = "status-ok" if refresh.ok else "status-warn"
@@ -811,6 +896,7 @@ def render_dashboard(data: Dict[str, object], refresh: RefreshResult) -> str:
   --safe:#0bcf7a;
   --balanced:#00d8ff;
   --aggr:#ff6b6b;
+  --anti:#d18cff;
   --shadow:0 0 0 1px rgba(0,255,156,.08), 0 0 24px rgba(0,255,156,.08), inset 0 0 0 1px rgba(255,255,255,.02);
 }}
 * {{ box-sizing:border-box; }}
@@ -828,6 +914,7 @@ body {{
 .grid {{ display:grid; gap:18px; }}
 .top {{ grid-template-columns: 1.3fr .7fr; }}
 .two {{ grid-template-columns: 1fr 1fr; }}
+.three {{ grid-template-columns: 1fr 1fr 1fr; }}
 .card {{
   background: linear-gradient(180deg, rgba(9,17,24,.94), rgba(5,11,16,.94));
   border:1px solid rgba(0,255,156,.12);
@@ -868,6 +955,7 @@ body {{
 .chip.safe {{ background:rgba(11,207,122,.14); color:#8dffd0; }}
 .chip.balanced {{ background:rgba(0,216,255,.14); color:#9befff; }}
 .chip.aggressive {{ background:rgba(255,107,107,.14); color:#ffbaba; }}
+.chip.anti {{ background:rgba(209,140,255,.16); color:#e7c7ff; }}
 table {{ width:100%; border-collapse: collapse; }}
 th, td {{ border-bottom:1px solid rgba(255,255,255,.06); padding:11px 10px; text-align:left; font-size:14px; }}
 th {{ color:#b7ffe5; font-size:12px; letter-spacing:.08em; text-transform:uppercase; }}
@@ -883,8 +971,8 @@ th {{ color:#b7ffe5; font-size:12px; letter-spacing:.08em; text-transform:upperc
 .btn.alt {{ background:linear-gradient(180deg, rgba(0,216,255,.14), rgba(0,216,255,.08)); border-color:rgba(0,216,255,.18); }}
 .small-note {{ color:var(--muted); font-size:13px; line-height:1.5; }}
 .footer {{ margin-top:18px; color:var(--muted); font-size:13px; line-height:1.6; }}
-@media (max-width: 980px) {{
-  .top, .two {{ grid-template-columns: 1fr; }}
+@media (max-width: 1100px) {{
+  .top, .two, .three {{ grid-template-columns: 1fr; }}
   .kpi-grid, .best-meta {{ grid-template-columns: 1fr 1fr; }}
   .hero-title {{ font-size:32px; }}
 }}
@@ -908,9 +996,9 @@ function refreshNow() {{ window.location.reload(); }}
 <div class="wrap">
 
   <div class="card">
-    <div class="badge">EuroMillions live model</div>
-    <div class="hero-title">EuroMillions weekly picks dashboard</div>
-    <div class="sub">Automatic live refresh with XML primary source, HTML fallback source, local cache fallback, recent draws, and downloadable CSV files.</div>
+    <div class="badge">EuroMillions live premium model</div>
+    <div class="hero-title">EuroMillions premium analytics dashboard</div>
+    <div class="sub">Live refresh, XML primary source, HTML fallback, local cache safety, hot numbers, overdue numbers, frequent pairs, anti-last-draw lines, and downloadable CSV files.</div>
 
     <div class="kpi-grid">
       <div class="kpi"><div class="label">Generated</div><div class="value">{html.escape(generated)}</div></div>
@@ -948,12 +1036,6 @@ function refreshNow() {{ window.location.reload(); }}
       <div class="tiny">Last attempt: {html.escape(str(last_attempt_at))}</div>
       <div class="tiny">Last success: {html.escape(str(last_success_at))}</div>
       <div class="tiny">Last success source: {html.escape(str(last_success_source))}</div>
-      <div class="tiny" style="margin-top:12px;">Official XML source:</div>
-      <div class="inline-cmd">{html.escape(OFFICIAL_XML_URL)}</div>
-      <div class="tiny" style="margin-top:12px;">Official HTML fallback:</div>
-      <div class="inline-cmd">{html.escape(OFFICIAL_RESULTS_URL)}</div>
-      <div class="tiny" style="margin-top:12px;">Local history file:</div>
-      <div class="inline-cmd">{html.escape(str(LOCAL_HISTORY))}</div>
       <div class="actions">
         <a class="btn" href="/admin/refresh">Open refresh JSON</a>
         <a class="btn alt" href="/download/history">Download history CSV</a>
@@ -977,8 +1059,8 @@ function refreshNow() {{ window.location.reload(); }}
     <div class="card">
       <div class="section-title">What to play</div>
       <p class="small-note"><strong>Fast rule:</strong> use the big line in <strong>Best line for next draw</strong>.</p>
-      <p class="small-note"><strong>Backup rule:</strong> if you want 2 or 3 plays instead of 1, use the top <strong>balanced</strong> line first, then the top <strong>safe</strong> line.</p>
-      <p class="small-note"><strong>Do not use</strong> the latest official draw as your next play.</p>
+      <p class="small-note"><strong>Backup rule:</strong> use balanced first, then safe, then anti-last-draw if you want more variation.</p>
+      <p class="small-note"><strong>Avoid:</strong> copying the latest official draw into your next play.</p>
     </div>
   </div>
 
@@ -988,8 +1070,23 @@ function refreshNow() {{ window.location.reload(); }}
   </div>
 
   <div class="card" style="margin-top:18px;">
-    <div class="section-title">Suggested backup lines</div>
+    <div class="section-title">Suggested lines</div>
     {suggested_table}
+  </div>
+
+  <div class="grid three" style="margin-top:18px;">
+    <div class="card">
+      <div class="section-title">Hot numbers (last 10 draws)</div>
+      {hot_last_10_table}
+    </div>
+    <div class="card">
+      <div class="section-title">Most overdue numbers</div>
+      {overdue_table}
+    </div>
+    <div class="card">
+      <div class="section-title">Top frequent pairs</div>
+      {top_pairs_table}
+    </div>
   </div>
 
   <div class="grid two" style="margin-top:18px;">
