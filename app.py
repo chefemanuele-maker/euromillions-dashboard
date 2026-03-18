@@ -1,7 +1,7 @@
 from pathlib import Path
 from flask import Flask, Response, jsonify
 import traceback
-import euromillions_live_dashboard_v2 as euro
+import euromillions_live_dashboard as euro
 
 app = Flask(__name__)
 
