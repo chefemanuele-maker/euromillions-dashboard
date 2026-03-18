@@ -3,5 +3,5 @@ services:
     name: euromillions-dashboard
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: gunicorn --bind 0.0.0.0:$PORT app:app
     plan: free
