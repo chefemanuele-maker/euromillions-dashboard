@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import argparse
-import datetime as dt
-import html
+import json
 import logging
 import random
 import re
 import sys
-import threading
-import webbrowser
+import html
+import datetime as dt
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -28,15 +25,16 @@ logger = logging.getLogger(__name__)
 
 OFFICIAL_XML_URL = "https://www.national-lottery.co.uk/results/euromillions/draw-history/xml"
 OFFICIAL_RESULTS_URL = "https://www.national-lottery.co.uk/results/euromillions"
+
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36"
 )
 
-DEFAULT_PORT = 8765
 BASE_DIR = Path.home() / "Data" / "Euro"
 LOCAL_HISTORY = BASE_DIR / "euromillions_history_live.csv"
 USER_ORIGINAL = BASE_DIR / "euromillions_export_2026-03-16.csv"
+REFRESH_STATE_FILE = BASE_DIR / "euromillions_refresh_state.json"
 
 MAIN_RANGE = list(range(1, 51))
 STAR_RANGE = list(range(1, 13))
@@ -59,6 +57,49 @@ class BestLineDecision:
 
 def ensure_base_dir() -> None:
     BASE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def save_json_atomic(path: Path, payload: Dict[str, object]) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def load_refresh_state() -> Dict[str, object]:
+    ensure_base_dir()
+    if not REFRESH_STATE_FILE.exists():
+        return {}
+    try:
+        return json.loads(REFRESH_STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_refresh_state(
+    *,
+    ok: bool,
+    source: str,
+    message: str,
+    draws_added: int,
+    latest_date: Optional[str],
+) -> None:
+    ensure_base_dir()
+    now = dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    state = load_refresh_state()
+
+    state["last_attempt_at"] = now
+    state["last_attempt_ok"] = ok
+    state["last_attempt_source"] = source
+    state["last_attempt_message"] = message
+    state["last_attempt_draws_added"] = draws_added
+    state["latest_date"] = latest_date
+
+    if ok:
+        state["last_success_at"] = now
+        state["last_success_source"] = source
+        state["last_success_message"] = message
+
+    save_json_atomic(REFRESH_STATE_FILE, state)
 
 
 def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -145,9 +186,7 @@ def load_local_history() -> pd.DataFrame:
             continue
 
     if not frames:
-        raise FileNotFoundError(
-            "No usable EuroMillions CSV found. Put your CSV in the project folder."
-        )
+        raise FileNotFoundError("No usable EuroMillions CSV found in the project folder.")
 
     df = dedupe_history(pd.concat(frames, ignore_index=True))
     persist_history(df)
@@ -186,8 +225,9 @@ def parse_official_xml(text: str) -> pd.DataFrame:
 
         if not draw_date:
             for value in values_map.values():
-                if re.search(r"\d{4}-\d{2}-\d{2}", value):
-                    draw_date = re.search(r"\d{4}-\d{2}-\d{2}", value).group(0)
+                match = re.search(r"\d{4}-\d{2}-\d{2}", value)
+                if match:
+                    draw_date = match.group(0)
                     break
 
         if not draw_date:
@@ -225,7 +265,6 @@ def parse_official_xml(text: str) -> pd.DataFrame:
             row[f"ball_{i}"] = v
         row["lucky_star_1"] = stars[0]
         row["lucky_star_2"] = stars[1]
-
         rows.append(row)
 
     if not rows:
@@ -257,42 +296,164 @@ def fetch_official_xml(timeout: int = 20) -> pd.DataFrame:
     return parse_official_xml(text)
 
 
+def _extract_json_array(script_text: str, key_patterns: List[str]) -> Optional[List[int]]:
+    for key in key_patterns:
+        pattern = rf'"{key}"\s*:\s*\[(.*?)\]'
+        match = re.search(pattern, script_text, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            nums = [int(x) for x in re.findall(r"\d{1,2}", match.group(1))]
+            if nums:
+                return nums
+    return None
+
+
+def parse_official_html_backup(text: str) -> pd.DataFrame:
+    scripts = re.findall(r"<script[^>]*>(.*?)</script>", text, flags=re.IGNORECASE | re.DOTALL)
+
+    candidates = scripts + [text]
+
+    for chunk in candidates:
+        date_match = (
+            re.search(r'"drawDate"\s*:\s*"([^"]+)"', chunk, flags=re.IGNORECASE)
+            or re.search(r'"date"\s*:\s*"([^"]+)"', chunk, flags=re.IGNORECASE)
+            or re.search(r"(\d{4}-\d{2}-\d{2})", chunk)
+        )
+
+        main_nums = _extract_json_array(
+            chunk,
+            ["mainNumbers", "main_numbers", "balls", "numbers", "drawnNumbers"],
+        )
+        star_nums = _extract_json_array(
+            chunk,
+            ["luckyStars", "lucky_stars", "stars", "starNumbers"],
+        )
+
+        if not date_match or not main_nums or not star_nums:
+            continue
+
+        draw_date_raw = date_match.group(1) if hasattr(date_match, "group") else None
+        parsed_date = pd.to_datetime(draw_date_raw, errors="coerce")
+        if pd.isna(parsed_date):
+            continue
+
+        balls = sorted(int(x) for x in main_nums[:5])
+        stars = sorted(int(x) for x in star_nums[:2])
+
+        if len(balls) != 5 or len(stars) != 2:
+            continue
+
+        row = {
+            "draw_date": parsed_date.date().isoformat(),
+            "ball_1": balls[0],
+            "ball_2": balls[1],
+            "ball_3": balls[2],
+            "ball_4": balls[3],
+            "ball_5": balls[4],
+            "lucky_star_1": stars[0],
+            "lucky_star_2": stars[1],
+            "source": "official_html_backup",
+        }
+
+        parsed = standardize_columns(pd.DataFrame([row]))
+        logger.info("Parsed HTML backup | latest=%s", parsed["draw_date"].max())
+        return parsed
+
+    raise ValueError("HTML backup parser could not confidently extract the latest draw.")
+
+
+def fetch_official_html_backup(timeout: int = 20) -> pd.DataFrame:
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": OFFICIAL_RESULTS_URL,
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+
+    logger.info("Fetching official HTML backup: %s", OFFICIAL_RESULTS_URL)
+    resp = requests.get(OFFICIAL_RESULTS_URL, headers=headers, timeout=timeout)
+    logger.info("Official HTML backup response status: %s", resp.status_code)
+    resp.raise_for_status()
+
+    text = resp.text.strip()
+    if not text:
+        raise ValueError("Official HTML backup response is empty.")
+
+    return parse_official_html_backup(text)
+
+
 def refresh_history() -> Tuple[pd.DataFrame, RefreshResult]:
     df = load_local_history()
 
     try:
         official = fetch_official_xml()
         before = len(df)
-
         merged = dedupe_history(pd.concat([df, official], ignore_index=True))
         persist_history(merged)
         added = len(merged) - before
         latest_date = str(merged["draw_date"].max())
 
-        logger.info(
-            "Official refresh complete | before=%s after=%s added=%s latest=%s",
-            before, len(merged), added, latest_date,
-        )
-
-        return merged, RefreshResult(
+        result = RefreshResult(
             source="official_xml",
             ok=True,
             message="Official refresh complete.",
             draws_added=max(0, added),
             latest_date=latest_date,
         )
-
-    except Exception as exc:
-        logger.exception("Official refresh failed")
-
-        latest_date = str(df["draw_date"].max()) if not df.empty else None
-        return df, RefreshResult(
-            source="local_cache",
-            ok=False,
-            message=f"Official source unavailable right now. Using local cache. ({exc})",
-            draws_added=0,
-            latest_date=latest_date,
+        save_refresh_state(
+            ok=result.ok,
+            source=result.source,
+            message=result.message,
+            draws_added=result.draws_added,
+            latest_date=result.latest_date,
         )
+        return merged, result
+
+    except Exception as xml_exc:
+        logger.exception("Official XML refresh failed")
+
+        try:
+            html_backup = fetch_official_html_backup()
+            before = len(df)
+            merged = dedupe_history(pd.concat([df, html_backup], ignore_index=True))
+            persist_history(merged)
+            added = len(merged) - before
+            latest_date = str(merged["draw_date"].max())
+
+            result = RefreshResult(
+                source="official_html_backup",
+                ok=True,
+                message=f"XML failed, HTML backup refresh complete. ({xml_exc})",
+                draws_added=max(0, added),
+                latest_date=latest_date,
+            )
+            save_refresh_state(
+                ok=result.ok,
+                source=result.source,
+                message=result.message,
+                draws_added=result.draws_added,
+                latest_date=result.latest_date,
+            )
+            return merged, result
+
+        except Exception as html_exc:
+            logger.exception("Official HTML backup refresh failed")
+            latest_date = str(df["draw_date"].max()) if not df.empty else None
+            result = RefreshResult(
+                source="local_cache",
+                ok=False,
+                message=f"Official source unavailable. Using local cache. (XML: {xml_exc}) (HTML: {html_exc})",
+                draws_added=0,
+                latest_date=latest_date,
+            )
+            save_refresh_state(
+                ok=result.ok,
+                source=result.source,
+                message=result.message,
+                draws_added=result.draws_added,
+                latest_date=result.latest_date,
+            )
+            return df, result
 
 
 def enrich_history(df: pd.DataFrame) -> pd.DataFrame:
@@ -331,20 +492,17 @@ def build_rank_table(df: pd.DataFrame, number_pool: Sequence[int], cols: Sequenc
         overdue_score = (draws_since_seen / max(n_draws, 1)) * 100.0
         score = (hot_score * 0.62) + (overdue_score * 0.23) + (min(draws_since_seen, 20) * 0.75)
 
-        rows.append(
-            {
-                "number": n,
-                "kind": kind,
-                "times_seen": seen,
-                "frequency_pct": round(freq_rate * 100, 3),
-                "draws_since_seen": draws_since_seen,
-                "score": round(score, 3),
-            }
-        )
+        rows.append({
+            "number": n,
+            "kind": kind,
+            "times_seen": seen,
+            "frequency_pct": round(freq_rate * 100, 3),
+            "draws_since_seen": draws_since_seen,
+            "score": round(score, 3),
+        })
 
     rank = pd.DataFrame(rows).sort_values(
-        ["score", "times_seen", "number"],
-        ascending=[False, False, True],
+        ["score", "times_seen", "number"], ascending=[False, False, True]
     ).reset_index(drop=True)
     rank["rank"] = range(1, len(rank) + 1)
     return rank[["rank", "number", "kind", "times_seen", "frequency_pct", "draws_since_seen", "score"]]
@@ -485,17 +643,15 @@ def generate_suggested_lines(df: pd.DataFrame, lines_per_mode: int = 4, seed: in
                 hist_sum_std,
             )
 
-            rows.append(
-                {
-                    "mode": mode,
-                    "balls": " ".join(f"{x:02d}" for x in balls),
-                    "stars": " ".join(f"{x:02d}" for x in stars),
-                    "sum_balls": sum(balls),
-                    "odd_even": f"{odd}-{5 - odd}",
-                    "low_high": f"{low}-{5 - low}",
-                    "score": score,
-                }
-            )
+            rows.append({
+                "mode": mode,
+                "balls": " ".join(f"{x:02d}" for x in balls),
+                "stars": " ".join(f"{x:02d}" for x in stars),
+                "sum_balls": sum(balls),
+                "odd_even": f"{odd}-{5 - odd}",
+                "low_high": f"{low}-{5 - low}",
+                "score": score,
+            })
             used.add(key)
             made += 1
 
@@ -536,6 +692,10 @@ def choose_best_line(suggested: pd.DataFrame) -> Tuple[Dict[str, object], BestLi
     )
 
 
+def suggested_to_dataframe(suggested_rows: List[Dict[str, object]]) -> pd.DataFrame:
+    return pd.DataFrame(suggested_rows)
+
+
 def build_dashboard_data(df: pd.DataFrame) -> Dict[str, object]:
     hist = enrich_history(df)
     main_rank = build_rank_table(hist, MAIN_RANGE, [f"ball_{i}" for i in range(1, 6)], "main")
@@ -543,6 +703,7 @@ def build_dashboard_data(df: pd.DataFrame) -> Dict[str, object]:
     odd_even, low_high = top_pattern_tables(hist)
     suggested = generate_suggested_lines(hist)
     best_line, decision = choose_best_line(suggested)
+    state = load_refresh_state()
 
     latest = hist.iloc[-1]
     latest_draw = {
@@ -553,6 +714,15 @@ def build_dashboard_data(df: pd.DataFrame) -> Dict[str, object]:
         "jackpot": "" if pd.isna(latest.get("jackpot")) else str(latest.get("jackpot")),
         "uk_code": "" if pd.isna(latest.get("uk_millionaire_maker")) else str(latest.get("uk_millionaire_maker")),
     }
+
+    recent = hist.tail(10).sort_values("draw_date", ascending=False).copy()
+    recent_rows = []
+    for _, row in recent.iterrows():
+        recent_rows.append({
+            "draw_date": row["draw_date"].date().isoformat(),
+            "balls": " ".join(f"{int(row[f'ball_{i}']):02d}" for i in range(1, 6)),
+            "stars": f"{int(row['lucky_star_1']):02d} {int(row['lucky_star_2']):02d}",
+        })
 
     return {
         "history_rows": len(hist),
@@ -569,6 +739,8 @@ def build_dashboard_data(df: pd.DataFrame) -> Dict[str, object]:
         "history_end": hist["draw_date"].max().date().isoformat(),
         "sum_mean": round(float(hist["sum_balls"].mean()), 2),
         "sum_std": round(float(hist["sum_balls"].std(ddof=0) or 0), 2),
+        "recent_draws": recent_rows,
+        "refresh_state": state,
     }
 
 
@@ -589,6 +761,7 @@ def mode_chip(mode: str) -> str:
 def render_dashboard(data: Dict[str, object], refresh: RefreshResult) -> str:
     latest = data["latest_draw"]
     best = data["best_line"]
+    state = data.get("refresh_state", {})
 
     main_table = render_table(
         data["main_top10"],
@@ -598,8 +771,10 @@ def render_dashboard(data: Dict[str, object], refresh: RefreshResult) -> str:
         data["star_top10"],
         [("rank", "#"), ("number", "Star"), ("times_seen", "Seen"), ("draws_since_seen", "Draws since"), ("score", "Score")],
     )
-    odd_even_table = render_table(data["odd_even_top"], [("pattern", "Odd-Even"), ("count", "Count"), ("pct", "%")])
-    low_high_table = render_table(data["low_high_top"], [("pattern", "Low-High"), ("count", "Count"), ("pct", "%")])
+    recent_draws_table = render_table(
+        data["recent_draws"],
+        [("draw_date", "Date"), ("balls", "Main numbers"), ("stars", "Stars")],
+    )
     suggested_table = render_table(
         data["suggested"],
         [("mode", "Mode"), ("balls", "Main numbers"), ("stars", "Stars"), ("sum_balls", "Sum"), ("odd_even", "Odd-Even"), ("low_high", "Low-High"), ("score", "Score")],
@@ -613,6 +788,10 @@ def render_dashboard(data: Dict[str, object], refresh: RefreshResult) -> str:
     stars_html = "".join(f'<span class="star">{n:02d}</span>' for n in latest["stars"])
     best_balls_html = "".join(f'<span class="ball hero-ball">{n}</span>' for n in str(best["balls"]).split())
     best_stars_html = "".join(f'<span class="star hero-star">{n}</span>' for n in str(best["stars"]).split())
+
+    last_success_at = state.get("last_success_at", "-")
+    last_attempt_at = state.get("last_attempt_at", "-")
+    last_success_source = state.get("last_success_source", "-")
 
     return f"""<!doctype html>
 <html lang="en">
@@ -645,7 +824,7 @@ body {{
     linear-gradient(180deg, var(--bg-0), var(--bg-1) 45%, var(--bg-0));
   min-height:100vh;
 }}
-.wrap {{ max-width: 1400px; margin: 0 auto; padding: 24px; }}
+.wrap {{ max-width: 1450px; margin: 0 auto; padding: 24px; }}
 .grid {{ display:grid; gap:18px; }}
 .top {{ grid-template-columns: 1.3fr .7fr; }}
 .two {{ grid-template-columns: 1fr 1fr; }}
@@ -656,7 +835,7 @@ body {{
   padding: 18px;
   box-shadow: var(--shadow);
 }}
-.hero-title {{ font-size: 42px; line-height:1; margin: 6px 0 10px; letter-spacing:-1px; }}
+.hero-title {{ font-size: 40px; line-height:1; margin: 6px 0 10px; letter-spacing:-1px; }}
 .sub {{ color: var(--muted); line-height:1.55; max-width: 950px; }}
 .tiny {{ color: var(--muted); font-size: 12px; }}
 .badge {{
@@ -671,7 +850,7 @@ body {{
 .kpi-grid {{ display:grid; grid-template-columns: repeat(4,1fr); gap:12px; margin-top:16px; }}
 .kpi {{ background:rgba(0,255,156,.04); border:1px solid rgba(0,255,156,.1); border-radius:16px; padding:12px; }}
 .kpi .label {{ color:var(--muted); font-size:12px; }}
-.kpi .value {{ font-size:20px; margin-top:5px; font-weight:800; }}
+.kpi .value {{ font-size:19px; margin-top:5px; font-weight:800; }}
 .balls {{ display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }}
 .ball,.star {{
   width:46px; height:46px; display:inline-flex; align-items:center; justify-content:center;
@@ -699,6 +878,7 @@ th {{ color:#b7ffe5; font-size:12px; letter-spacing:.08em; text-transform:upperc
   padding:12px 16px; border-radius:14px; font-weight:800;
   background:linear-gradient(180deg, rgba(0,255,156,.18), rgba(0,255,156,.08));
   color:var(--text); border:1px solid rgba(0,255,156,.18);
+  display:inline-block;
 }}
 .btn.alt {{ background:linear-gradient(180deg, rgba(0,216,255,.14), rgba(0,216,255,.08)); border-color:rgba(0,216,255,.18); }}
 .small-note {{ color:var(--muted); font-size:13px; line-height:1.5; }}
@@ -726,10 +906,12 @@ function refreshNow() {{ window.location.reload(); }}
 </head>
 <body>
 <div class="wrap">
+
   <div class="card">
     <div class="badge">EuroMillions live model</div>
     <div class="hero-title">EuroMillions weekly picks dashboard</div>
-    <div class="sub">This page checks the official UK EuroMillions history source whenever available, updates your stored history, re-scores numbers and stars, and shows a single best line for next draw plus backup lines.</div>
+    <div class="sub">Automatic live refresh with XML primary source, HTML fallback source, local cache fallback, recent draws, and downloadable CSV files.</div>
+
     <div class="kpi-grid">
       <div class="kpi"><div class="label">Generated</div><div class="value">{html.escape(generated)}</div></div>
       <div class="kpi"><div class="label">History range</div><div class="value">{html.escape(str(data['history_start']))}<br><span class="tiny">to {html.escape(str(data['history_end']))}</span></div></div>
@@ -748,6 +930,7 @@ function refreshNow() {{ window.location.reload(); }}
       <div class="actions">
         <button class="btn" onclick="copyBestLine()">Copy best line</button>
         <button class="btn alt" onclick="refreshNow()">Refresh now</button>
+        <a class="btn alt" href="/download/suggested">Download suggested CSV</a>
         <span id="copy-status" class="small-note"></span>
       </div>
       <div class="best-meta">
@@ -762,12 +945,19 @@ function refreshNow() {{ window.location.reload(); }}
     <div class="card">
       <div class="section-title">Sync / machine status</div>
       <p class="small-note">{html.escape(refresh_text)}</p>
-      <div class="tiny">Auto page refresh while open: every 15 minutes.</div>
-      <div class="tiny">Every time the page loads, it tries the official feed first. If the site is unavailable, it uses your local cache and still recalculates the picks.</div>
-      <div class="tiny" style="margin-top:12px;">Official source:</div>
+      <div class="tiny">Last attempt: {html.escape(str(last_attempt_at))}</div>
+      <div class="tiny">Last success: {html.escape(str(last_success_at))}</div>
+      <div class="tiny">Last success source: {html.escape(str(last_success_source))}</div>
+      <div class="tiny" style="margin-top:12px;">Official XML source:</div>
       <div class="inline-cmd">{html.escape(OFFICIAL_XML_URL)}</div>
+      <div class="tiny" style="margin-top:12px;">Official HTML fallback:</div>
+      <div class="inline-cmd">{html.escape(OFFICIAL_RESULTS_URL)}</div>
       <div class="tiny" style="margin-top:12px;">Local history file:</div>
       <div class="inline-cmd">{html.escape(str(LOCAL_HISTORY))}</div>
+      <div class="actions">
+        <a class="btn" href="/admin/refresh">Open refresh JSON</a>
+        <a class="btn alt" href="/download/history">Download history CSV</a>
+      </div>
     </div>
   </div>
 
@@ -793,6 +983,11 @@ function refreshNow() {{ window.location.reload(); }}
   </div>
 
   <div class="card" style="margin-top:18px;">
+    <div class="section-title">Latest 10 draws</div>
+    {recent_draws_table}
+  </div>
+
+  <div class="card" style="margin-top:18px;">
     <div class="section-title">Suggested backup lines</div>
     {suggested_table}
   </div>
@@ -808,86 +1003,10 @@ function refreshNow() {{ window.location.reload(); }}
     </div>
   </div>
 
-  <div class="grid two" style="margin-top:18px;">
-    <div class="card">
-      <div class="section-title">Most common odd / even patterns</div>
-      {odd_even_table}
-    </div>
-    <div class="card">
-      <div class="section-title">Most common low / high patterns</div>
-      {low_high_table}
-    </div>
-  </div>
-
   <div class="card footer">
     <strong>Model notes.</strong> Ball-sum mean in your history: <strong>{html.escape(str(data['sum_mean']))}</strong> | standard deviation: <strong>{html.escape(str(data['sum_std']))}</strong>
   </div>
+
 </div>
 </body>
 </html>"""
-
-
-class DashboardHandler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:
-        if self.path not in ["/", "/index.html"]:
-            self.send_error(404, "Not found")
-            return
-
-        try:
-            df, refresh = refresh_history()
-            data = build_dashboard_data(df)
-            page = render_dashboard(data, refresh).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(page)))
-            self.end_headers()
-            self.wfile.write(page)
-        except Exception as exc:
-            msg = f"<h1>Dashboard error</h1><pre>{html.escape(str(exc))}</pre>".encode("utf-8")
-            self.send_response(500)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(msg)))
-            self.end_headers()
-            self.wfile.write(msg)
-
-    def log_message(self, fmt: str, *args) -> None:
-        return
-
-
-def run_server(port: int = DEFAULT_PORT, open_browser: bool = True) -> None:
-    ensure_base_dir()
-    try:
-        refresh_history()
-    except Exception:
-        logger.exception("Initial refresh failed")
-
-    server = ThreadingHTTPServer(("127.0.0.1", port), DashboardHandler)
-    url = f"http://127.0.0.1:{port}/"
-
-    print("=" * 72)
-    print("EuroMillions Live Dashboard")
-    print(f"URL: {url}")
-    print(f"History CSV: {LOCAL_HISTORY}")
-    print("=" * 72)
-
-    if open_browser:
-        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nStopping dashboard...")
-    finally:
-        server.server_close()
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the EuroMillions live local dashboard")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port for the local dashboard")
-    parser.add_argument("--no-browser", action="store_true", help="Do not auto-open the browser")
-    args = parser.parse_args()
-    run_server(port=args.port, open_browser=not args.no_browser)
-
-
-if __name__ == "__main__":
-    main()
