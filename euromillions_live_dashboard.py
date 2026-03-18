@@ -15,9 +15,10 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import html
-import os
+import logging
 import random
 import re
+import sys
 import threading
 import webbrowser
 import xml.etree.ElementTree as ET
@@ -37,6 +38,15 @@ try:
 except Exception:
     print("This app needs requests installed. Try: pip3 install requests")
     raise
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
+
 
 OFFICIAL_XML_URL = "https://www.national-lottery.co.uk/results/euromillions/draw-history/xml"
 OFFICIAL_RESULTS_URL = "https://www.national-lottery.co.uk/results/euromillions"
@@ -118,10 +128,12 @@ def persist_history(df: pd.DataFrame) -> None:
     out = df.copy()
     out["draw_date"] = out["draw_date"].astype(str)
     out.to_csv(LOCAL_HISTORY, index=False)
+    logger.info("Saved local history CSV: %s | rows=%s", LOCAL_HISTORY, len(out))
 
 
 def load_local_history() -> pd.DataFrame:
     ensure_base_dir()
+
     candidates = []
     if LOCAL_HISTORY.exists():
         candidates.append(LOCAL_HISTORY)
@@ -131,67 +143,102 @@ def load_local_history() -> pd.DataFrame:
     frames: List[pd.DataFrame] = []
     for path in candidates:
         try:
+            logger.info("Trying CSV source: %s", path)
             frames.append(standardize_columns(pd.read_csv(path)))
-        except Exception:
+        except Exception as exc:
+            logger.warning("Skipping invalid CSV source %s | reason=%s", path, exc)
             continue
 
     if not frames:
         raise FileNotFoundError(
-            "No usable EuroMillions CSV found. Put your CSV in ~/Data/Euro/"
+            "No usable EuroMillions CSV found. Put your CSV in the project folder."
         )
 
     df = dedupe_history(pd.concat(frames, ignore_index=True))
     persist_history(df)
+    logger.info("Loaded local history | rows=%s | latest=%s", len(df), df["draw_date"].max())
     return df
 
 
 def parse_official_xml(text: str) -> pd.DataFrame:
-    text = text.strip()
     root = ET.fromstring(text)
     rows: List[Dict[str, object]] = []
 
-    for draw in root.findall(".//draw"):
-        row: Dict[str, object] = {"source": "official_xml"}
+    def local_name(tag_name: str) -> str:
+        return tag_name.split("}")[-1].lower()
 
-        def grab(*names: str) -> Optional[str]:
-            for name in names:
-                el = draw.find(name)
-                if el is not None and el.text:
-                    return el.text.strip()
-            return None
-
-        row["draw_date"] = grab("draw-date", "date")
-        row["draw_number"] = grab("draw-number", "draw-no", "id")
-        row["jackpot"] = grab("jackpot-amount", "jackpot")
-        row["uk_millionaire_maker"] = grab("uk-millionaire-maker", "ukmm-code", "millionaire-maker-code")
-
-        direct_balls = [grab(f"ball-{i}") for i in range(1, 6)]
-        direct_stars = [grab(f"lucky-star-{i}") for i in range(1, 3)]
-
-        if all(v is not None for v in direct_balls + direct_stars) and row.get("draw_date"):
-            for i, v in enumerate(direct_balls, 1):
-                row[f"ball_{i}"] = int(re.sub(r"\D", "", str(v)))
-            for i, v in enumerate(direct_stars, 1):
-                row[f"lucky_star_{i}"] = int(re.sub(r"\D", "", str(v)))
-            rows.append(row)
+    for elem in root.iter():
+        if local_name(elem.tag) != "draw":
             continue
 
-        values: List[int] = []
-        for child in draw.iter():
-            if child.text:
-                t = child.text.strip()
-                if re.fullmatch(r"\d{1,2}", t):
-                    values.append(int(t))
-        if len(values) >= 7 and row.get("draw_date"):
-            for i, v in enumerate(values[:5], 1):
+        draw = elem
+        row: Dict[str, object] = {"source": "official_xml"}
+        values_map: Dict[str, str] = {}
+
+        for child in list(draw):
+            name = local_name(child.tag)
+            value = child.text.strip() if child.text else ""
+            values_map[name] = value
+
+        row["draw_date"] = (
+            values_map.get("draw-date")
+            or values_map.get("date")
+            or values_map.get("drawdate")
+        )
+        row["draw_number"] = (
+            values_map.get("draw-number")
+            or values_map.get("draw-no")
+            or values_map.get("id")
+        )
+        row["jackpot"] = (
+            values_map.get("jackpot-amount")
+            or values_map.get("jackpot")
+        )
+        row["uk_millionaire_maker"] = (
+            values_map.get("uk-millionaire-maker")
+            or values_map.get("ukmm-code")
+            or values_map.get("millionaire-maker-code")
+        )
+
+        balls: List[int] = []
+        stars: List[int] = []
+
+        for key, value in values_map.items():
+            if re.fullmatch(r"\d{1,2}", value):
+                if "star" in key:
+                    stars.append(int(value))
+                elif "ball" in key:
+                    balls.append(int(value))
+
+        if len(balls) < 5 or len(stars) < 2:
+            numeric_values: List[int] = []
+            for child in draw.iter():
+                if child.text:
+                    t = child.text.strip()
+                    if re.fullmatch(r"\d{1,2}", t):
+                        numeric_values.append(int(t))
+
+            if len(numeric_values) >= 7:
+                balls = numeric_values[:5]
+                stars = numeric_values[5:7]
+
+        if row["draw_date"] and len(balls) >= 5 and len(stars) >= 2:
+            balls = sorted(balls[:5])
+            stars = sorted(stars[:2])
+
+            for i, v in enumerate(balls, 1):
                 row[f"ball_{i}"] = v
-            row["lucky_star_1"] = values[5]
-            row["lucky_star_2"] = values[6]
+            for i, v in enumerate(stars, 1):
+                row[f"lucky_star_{i}"] = v
+
             rows.append(row)
 
     if not rows:
         raise ValueError("No draw rows parsed from official XML.")
-    return standardize_columns(pd.DataFrame(rows))
+
+    parsed = standardize_columns(pd.DataFrame(rows))
+    logger.info("Parsed official XML | rows=%s | latest=%s", len(parsed), parsed["draw_date"].max())
+    return parsed
 
 
 def fetch_official_xml(timeout: int = 20) -> pd.DataFrame:
@@ -199,34 +246,57 @@ def fetch_official_xml(timeout: int = 20) -> pd.DataFrame:
         "User-Agent": USER_AGENT,
         "Accept": "application/xml,text/xml,text/plain,*/*",
         "Referer": OFFICIAL_RESULTS_URL,
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
     }
+
+    logger.info("Fetching official XML: %s", OFFICIAL_XML_URL)
     resp = requests.get(OFFICIAL_XML_URL, headers=headers, timeout=timeout)
+    logger.info("Official XML response status: %s", resp.status_code)
     resp.raise_for_status()
-    return parse_official_xml(resp.text)
+
+    text = resp.text.strip()
+    if not text:
+        raise ValueError("Official XML response is empty.")
+
+    return parse_official_xml(text)
 
 
 def refresh_history() -> Tuple[pd.DataFrame, RefreshResult]:
     df = load_local_history()
+
     try:
         official = fetch_official_xml()
         before = len(df)
+
         merged = dedupe_history(pd.concat([df, official], ignore_index=True))
         persist_history(merged)
         added = len(merged) - before
+        latest_date = str(merged["draw_date"].max())
+
+        logger.info(
+            "Official refresh complete | before=%s after=%s added=%s latest=%s",
+            before, len(merged), added, latest_date
+        )
+
         return merged, RefreshResult(
             source="official_xml",
             ok=True,
             message="Official refresh complete.",
             draws_added=max(0, added),
-            latest_date=str(merged["draw_date"].max()),
+            latest_date=latest_date,
         )
+
     except Exception as exc:
+        logger.exception("Official refresh failed")
+
+        latest_date = str(df["draw_date"].max()) if not df.empty else None
         return df, RefreshResult(
             source="local_cache",
             ok=False,
             message=f"Official source unavailable right now. Using local cache. ({exc})",
             draws_added=0,
-            latest_date=str(df["draw_date"].max()) if not df.empty else None,
+            latest_date=latest_date,
         )
 
 
@@ -285,8 +355,10 @@ def build_rank_table(df: pd.DataFrame, number_pool: Sequence[int], cols: Sequenc
 def top_pattern_tables(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     odd_even = df["odd_even"].value_counts().rename_axis("pattern").reset_index(name="count")
     odd_even["pct"] = (odd_even["count"] / len(df) * 100).round(2)
+
     low_high = df["low_high"].value_counts().rename_axis("pattern").reset_index(name="count")
     low_high["pct"] = (low_high["count"] / len(df) * 100).round(2)
+
     return odd_even, low_high
 
 
@@ -294,18 +366,22 @@ def weighted_sample_without_replacement(population: Sequence[int], weights: Sequ
     items = list(population)
     w = list(weights)
     chosen: List[int] = []
+
     for _ in range(min(k, len(items))):
         total = sum(max(x, 0.00001) for x in w)
         pick = rng.random() * total
         upto = 0.0
         idx = 0
+
         for i, weight in enumerate(w):
             upto += max(weight, 0.00001)
             if upto >= pick:
                 idx = i
                 break
+
         chosen.append(items.pop(idx))
         w.pop(idx)
+
     return chosen
 
 
@@ -379,10 +455,12 @@ def generate_suggested_lines(df: pd.DataFrame, lines_per_mode: int = 4, seed: in
     for mode, cfg in modes.items():
         tries = 0
         made = 0
+
         while made < lines_per_mode and tries < 1000:
             tries += 1
             main_pool = main_rank["number"].tolist()[:cfg["top_main"]]
             star_pool = star_rank["number"].tolist()[:cfg["top_star"]]
+
             mw = [max(0.001, main_weights[n] * (1.0 + rng.uniform(-cfg["jitter"], cfg["jitter"]))) for n in main_pool]
             sw = [max(0.001, star_weights[s] * (1.0 + rng.uniform(-cfg["jitter"], cfg["jitter"]))) for s in star_pool]
 
@@ -425,7 +503,6 @@ def generate_suggested_lines(df: pd.DataFrame, lines_per_mode: int = 4, seed: in
 
 
 def choose_best_line(suggested: pd.DataFrame) -> Tuple[Dict[str, object], BestLineDecision]:
-    # Prefer high-scoring balanced first, then safe, then anything else.
     if suggested.empty:
         raise ValueError("No suggested lines generated.")
 
@@ -439,12 +516,14 @@ def choose_best_line(suggested: pd.DataFrame) -> Tuple[Dict[str, object], BestLi
             mode="balanced",
             reason="Chosen because balanced lines usually give the best mix of strong numbers, realistic spread, and stable pattern profile.",
         )
+
     if not safe.empty:
         row = safe.iloc[0].to_dict()
         return row, BestLineDecision(
             mode="safe",
             reason="Chosen because no balanced line was available, so the model took the strongest conservative line.",
         )
+
     row = aggressive.iloc[0].to_dict()
     return row, BestLineDecision(
         mode="aggressive",
@@ -811,6 +890,7 @@ def run_server(port: int = DEFAULT_PORT, open_browser: bool = True) -> None:
     try:
         refresh_history()
     except Exception:
+        logger.exception("Initial refresh failed")
         pass
 
     server = ThreadingHTTPServer(("127.0.0.1", port), DashboardHandler)
