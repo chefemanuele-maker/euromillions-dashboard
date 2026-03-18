@@ -3,7 +3,7 @@ import io
 import traceback
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, send_file
+from flask import Flask, Response, jsonify, send_file, request
 import euromillions_live_dashboard as euro
 
 app = Flask(__name__)
@@ -35,12 +35,6 @@ def home():
                 display:block;
                 margin:12px 0;
             }
-            pre {
-                white-space: pre-wrap;
-                background:#111827;
-                padding:20px;
-                border-radius:12px;
-            }
         </style>
     </head>
     <body>
@@ -59,7 +53,12 @@ def home():
 def euromillions():
     try:
         df, refresh = euro.refresh_history()
-        data = euro.build_dashboard_data(df)
+
+        lines_count = request.args.get("lines", default=5, type=int)
+        if lines_count not in [1, 3, 5, 10]:
+            lines_count = 5
+
+        data = euro.build_dashboard_data(df, premium_line_count=lines_count)
         html = euro.render_dashboard(data, refresh)
 
         response = Response(html, mimetype="text/html")
@@ -122,7 +121,7 @@ def download_history():
 def download_suggested():
     try:
         df = euro.load_local_history()
-        data = euro.build_dashboard_data(df)
+        data = euro.build_dashboard_data(df, premium_line_count=10)
         suggested_df = euro.suggested_to_dataframe(data["suggested"])
         csv_bytes = suggested_df.to_csv(index=False).encode("utf-8")
         return send_file(
