@@ -1,6 +1,8 @@
-from pathlib import Path
-from flask import Flask, Response, jsonify
+import os
 import traceback
+from pathlib import Path
+
+from flask import Flask, Response, jsonify
 import euromillions_live_dashboard as euro
 
 app = Flask(__name__)
@@ -93,4 +95,5 @@ def admin_refresh():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
