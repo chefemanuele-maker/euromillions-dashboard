@@ -508,16 +508,6 @@ def build_rank_table(df: pd.DataFrame, number_pool: Sequence[int], cols: Sequenc
     return rank[["rank", "number", "kind", "times_seen", "frequency_pct", "draws_since_seen", "score"]]
 
 
-def top_pattern_tables(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    odd_even = df["odd_even"].value_counts().rename_axis("pattern").reset_index(name="count")
-    odd_even["pct"] = (odd_even["count"] / len(df) * 100).round(2)
-
-    low_high = df["low_high"].value_counts().rename_axis("pattern").reset_index(name="count")
-    low_high["pct"] = (low_high["count"] / len(df) * 100).round(2)
-
-    return odd_even, low_high
-
-
 def get_hot_numbers_last_n(df: pd.DataFrame, n: int = 10) -> pd.DataFrame:
     recent = df.tail(n)
     counts = {num: 0 for num in MAIN_RANGE}
@@ -544,12 +534,39 @@ def get_top_pairs(df: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
         for pair in combinations(balls, 2):
             pair_counts[pair] = pair_counts.get(pair, 0) + 1
 
-    rows = [
-        {"pair": f"{a:02d} {b:02d}", "count": count}
-        for (a, b), count in pair_counts.items()
-    ]
+    rows = [{"pair": f"{a:02d} {b:02d}", "count": count} for (a, b), count in pair_counts.items()]
     out = pd.DataFrame(rows).sort_values(["count", "pair"], ascending=[False, True]).reset_index(drop=True)
     return out.head(top_n)
+
+
+def simple_bar_chart_html(
+    rows: List[Dict[str, object]],
+    label_key: str,
+    value_key: str,
+    title: str,
+    unit: str = "",
+) -> str:
+    if not rows:
+        return "<div>No data</div>"
+
+    max_value = max(float(row[value_key]) for row in rows) or 1.0
+    parts = [f'<div class="mini-chart-title">{html.escape(title)}</div>']
+    for row in rows:
+        label = str(row[label_key])
+        value = float(row[value_key])
+        width = max(6, int((value / max_value) * 100))
+        parts.append(
+            f'''
+            <div class="bar-row">
+              <div class="bar-label">{html.escape(label)}</div>
+              <div class="bar-track">
+                <div class="bar-fill" style="width:{width}%"></div>
+              </div>
+              <div class="bar-value">{html.escape(str(int(value) if value.is_integer() else round(value, 2)))}{html.escape(unit)}</div>
+            </div>
+            '''
+        )
+    return "".join(parts)
 
 
 def weighted_sample_without_replacement(population: Sequence[int], weights: Sequence[float], k: int, rng: random.Random) -> List[int]:
@@ -580,30 +597,12 @@ def line_score(
     stars: Sequence[int],
     main_rank: pd.DataFrame,
     star_rank: pd.DataFrame,
-    odd_even_popular: Sequence[str],
-    low_high_popular: Sequence[str],
     hist_sum_mean: float,
     hist_sum_std: float,
 ) -> float:
     main_lookup = main_rank.set_index("number")["score"].to_dict()
     star_lookup = star_rank.set_index("number")["score"].to_dict()
     base = sum(main_lookup.get(n, 0.0) for n in balls) + sum(star_lookup.get(s, 0.0) for s in stars)
-
-    odd = sum(n % 2 for n in balls)
-    low = sum(n <= 25 for n in balls)
-    odd_even = f"{odd}-{5 - odd}"
-    low_high = f"{low}-{5 - low}"
-
-    pattern_bonus = 0.0
-    if odd_even in odd_even_popular[:2]:
-        pattern_bonus += 12.0
-    elif odd_even in odd_even_popular[:4]:
-        pattern_bonus += 6.0
-
-    if low_high in low_high_popular[:2]:
-        pattern_bonus += 12.0
-    elif low_high in low_high_popular[:4]:
-        pattern_bonus += 6.0
 
     total_sum = sum(balls)
     z = abs((total_sum - hist_sum_mean) / hist_sum_std) if hist_sum_std else 0.0
@@ -615,19 +614,16 @@ def line_score(
     consecutive_pairs = sum(1 for a, b in zip(sorted(balls), sorted(balls)[1:]) if b == a + 1)
     consecutive_penalty = consecutive_pairs * 4.5
 
-    last_digit_penalty = (len(balls) - len({n % 10 for n in balls})) * 1.5
-    return round(base + pattern_bonus + sum_bonus + spread_bonus - consecutive_penalty - last_digit_penalty, 3)
+    overlap_bonus = len(set(balls)) * 0.0
+    return round(base + sum_bonus + spread_bonus + overlap_bonus - consecutive_penalty, 3)
 
 
 def generate_suggested_lines(df: pd.DataFrame, lines_per_mode: int = 4, seed: int = 42) -> pd.DataFrame:
     main_rank = build_rank_table(df, MAIN_RANGE, [f"ball_{i}" for i in range(1, 6)], "main")
     star_rank = build_rank_table(df, STAR_RANGE, ["lucky_star_1", "lucky_star_2"], "star")
-    odd_even, low_high = top_pattern_tables(df)
 
     hist_sum_mean = float(df["sum_balls"].mean())
     hist_sum_std = float(df["sum_balls"].std(ddof=0) or 1.0)
-    odd_even_popular = odd_even["pattern"].tolist()
-    low_high_popular = low_high["pattern"].tolist()
 
     rng = random.Random(seed)
     main_weights = {row["number"]: float(row["score"]) for _, row in main_rank.iterrows()}
@@ -651,7 +647,7 @@ def generate_suggested_lines(df: pd.DataFrame, lines_per_mode: int = 4, seed: in
         tries = 0
         made = 0
 
-        while made < lines_per_mode and tries < 1000:
+        while made < lines_per_mode and tries < 1500:
             tries += 1
             main_pool = main_rank["number"].tolist()[:cfg["top_main"]]
             star_pool = star_rank["number"].tolist()[:cfg["top_star"]]
@@ -682,8 +678,6 @@ def generate_suggested_lines(df: pd.DataFrame, lines_per_mode: int = 4, seed: in
                 stars,
                 main_rank,
                 star_rank,
-                odd_even_popular,
-                low_high_popular,
                 hist_sum_mean,
                 hist_sum_std,
             )
@@ -709,6 +703,36 @@ def generate_suggested_lines(df: pd.DataFrame, lines_per_mode: int = 4, seed: in
     out = out.sort_values(["mode", "score"], ascending=[True, False]).reset_index(drop=True)
     out["mode"] = out["mode"].astype(str)
     return out
+
+
+def generate_premium_line_pack(df: pd.DataFrame, total_lines: int = 5) -> pd.DataFrame:
+    hist = enrich_history(df)
+    base = generate_suggested_lines(hist, lines_per_mode=max(3, total_lines), seed=42)
+
+    target_order = ["balanced", "safe", "anti_last_draw", "aggressive"]
+    selected_rows: List[Dict[str, object]] = []
+    used_balls_sets = []
+
+    for mode in target_order:
+        mode_rows = base[base["mode"] == mode].sort_values("score", ascending=False)
+        for _, row in mode_rows.iterrows():
+            balls_tuple = tuple(row["balls"].split())
+            similarity_ok = True
+            for prev in used_balls_sets:
+                overlap = len(set(balls_tuple) & set(prev))
+                if overlap >= 4:
+                    similarity_ok = False
+                    break
+            if not similarity_ok:
+                continue
+
+            selected_rows.append(row.to_dict())
+            used_balls_sets.append(balls_tuple)
+
+            if len(selected_rows) >= total_lines:
+                return pd.DataFrame(selected_rows)
+
+    return pd.DataFrame(selected_rows).head(total_lines)
 
 
 def choose_best_line(suggested: pd.DataFrame) -> Tuple[Dict[str, object], BestLineDecision]:
@@ -752,11 +776,11 @@ def suggested_to_dataframe(suggested_rows: List[Dict[str, object]]) -> pd.DataFr
     return pd.DataFrame(suggested_rows)
 
 
-def build_dashboard_data(df: pd.DataFrame) -> Dict[str, object]:
+def build_dashboard_data(df: pd.DataFrame, premium_line_count: int = 5) -> Dict[str, object]:
     hist = enrich_history(df)
     main_rank = build_rank_table(hist, MAIN_RANGE, [f"ball_{i}" for i in range(1, 6)], "main")
     star_rank = build_rank_table(hist, STAR_RANGE, ["lucky_star_1", "lucky_star_2"], "star")
-    suggested = generate_suggested_lines(hist)
+    suggested = generate_premium_line_pack(hist, total_lines=premium_line_count)
     best_line, decision = choose_best_line(suggested)
     state = load_refresh_state()
 
@@ -779,9 +803,17 @@ def build_dashboard_data(df: pd.DataFrame) -> Dict[str, object]:
             "stars": f"{int(row['lucky_star_1']):02d} {int(row['lucky_star_2']):02d}",
         })
 
-    hot_last_10 = get_hot_numbers_last_n(hist, 10).to_dict(orient="records")
-    overdue = get_overdue_numbers(hist).to_dict(orient="records")
-    top_pairs = get_top_pairs(hist, 10).to_dict(orient="records")
+    hot_last_10_df = get_hot_numbers_last_n(hist, 10)
+    overdue_df = get_overdue_numbers(hist)
+    top_pairs_df = get_top_pairs(hist, 10)
+
+    hot_last_10 = hot_last_10_df.to_dict(orient="records")
+    overdue = overdue_df.to_dict(orient="records")
+    top_pairs = top_pairs_df.to_dict(orient="records")
+
+    hot_last_10_chart = simple_bar_chart_html(hot_last_10, "number", "seen_last_n", "Hot numbers")
+    overdue_chart = simple_bar_chart_html(overdue, "number", "draws_since_seen", "Overdue numbers")
+    top_pairs_chart = simple_bar_chart_html(top_pairs, "pair", "count", "Top pairs")
 
     return {
         "history_rows": len(hist),
@@ -801,6 +833,10 @@ def build_dashboard_data(df: pd.DataFrame) -> Dict[str, object]:
         "hot_last_10": hot_last_10,
         "overdue_numbers": overdue,
         "top_pairs": top_pairs,
+        "hot_last_10_chart": hot_last_10_chart,
+        "overdue_chart": overdue_chart,
+        "top_pairs_chart": top_pairs_chart,
+        "premium_line_count": premium_line_count,
     }
 
 
@@ -852,18 +888,6 @@ def render_dashboard(data: Dict[str, object], refresh: RefreshResult) -> str:
         data["suggested"],
         [("mode", "Mode"), ("balls", "Main numbers"), ("stars", "Stars"), ("sum_balls", "Sum"), ("odd_even", "Odd-Even"), ("low_high", "Low-High"), ("score", "Score")],
     )
-    hot_last_10_table = render_table(
-        data["hot_last_10"],
-        [("number", "Number"), ("seen_last_n", "Seen in last 10")],
-    )
-    overdue_table = render_table(
-        data["overdue_numbers"],
-        [("number", "Number"), ("draws_since_seen", "Draws since"), ("times_seen", "Total seen")],
-    )
-    top_pairs_table = render_table(
-        data["top_pairs"],
-        [("pair", "Pair"), ("count", "Count")],
-    )
 
     status_class = "status-ok" if refresh.ok else "status-warn"
     refresh_text = f"{refresh.message} Added {refresh.draws_added} new draw(s)." if refresh.ok else refresh.message
@@ -877,6 +901,15 @@ def render_dashboard(data: Dict[str, object], refresh: RefreshResult) -> str:
     last_success_at = state.get("last_success_at", "-")
     last_attempt_at = state.get("last_attempt_at", "-")
     last_success_source = state.get("last_success_source", "-")
+
+    selector_links = """
+    <div class="actions">
+      <a class="btn alt" href="/euromillions?lines=1">1 line</a>
+      <a class="btn alt" href="/euromillions?lines=3">3 lines</a>
+      <a class="btn alt" href="/euromillions?lines=5">5 lines</a>
+      <a class="btn alt" href="/euromillions?lines=10">10 lines</a>
+    </div>
+    """
 
     return f"""<!doctype html>
 <html lang="en">
@@ -971,6 +1004,12 @@ th {{ color:#b7ffe5; font-size:12px; letter-spacing:.08em; text-transform:upperc
 .btn.alt {{ background:linear-gradient(180deg, rgba(0,216,255,.14), rgba(0,216,255,.08)); border-color:rgba(0,216,255,.18); }}
 .small-note {{ color:var(--muted); font-size:13px; line-height:1.5; }}
 .footer {{ margin-top:18px; color:var(--muted); font-size:13px; line-height:1.6; }}
+.mini-chart-title {{ font-size:14px; font-weight:800; margin-bottom:10px; color:#c8ffea; }}
+.bar-row {{ display:grid; grid-template-columns: 58px 1fr 54px; gap:8px; align-items:center; margin-bottom:8px; }}
+.bar-label {{ font-size:12px; color:#d9fff0; }}
+.bar-track {{ height:10px; background:rgba(255,255,255,.06); border-radius:999px; overflow:hidden; }}
+.bar-fill {{ height:100%; background:linear-gradient(90deg, rgba(0,255,156,.85), rgba(0,216,255,.85)); border-radius:999px; }}
+.bar-value {{ font-size:12px; color:#b7ffe5; text-align:right; }}
 @media (max-width: 1100px) {{
   .top, .two, .three {{ grid-template-columns: 1fr; }}
   .kpi-grid, .best-meta {{ grid-template-columns: 1fr 1fr; }}
@@ -998,13 +1037,13 @@ function refreshNow() {{ window.location.reload(); }}
   <div class="card">
     <div class="badge">EuroMillions live premium model</div>
     <div class="hero-title">EuroMillions premium analytics dashboard</div>
-    <div class="sub">Live refresh, XML primary source, HTML fallback, local cache safety, hot numbers, overdue numbers, frequent pairs, anti-last-draw lines, and downloadable CSV files.</div>
+    <div class="sub">Live refresh, XML primary source, HTML fallback, local cache safety, hot numbers, overdue numbers, frequent pairs, anti-last-draw lines, premium line pack, and lightweight charts.</div>
 
     <div class="kpi-grid">
       <div class="kpi"><div class="label">Generated</div><div class="value">{html.escape(generated)}</div></div>
       <div class="kpi"><div class="label">History range</div><div class="value">{html.escape(str(data['history_start']))}<br><span class="tiny">to {html.escape(str(data['history_end']))}</span></div></div>
       <div class="kpi"><div class="label">Stored draws</div><div class="value">{data['history_rows']}</div></div>
-      <div class="kpi"><div class="label">Source state</div><div class="value"><span class="badge {status_class}">{html.escape(refresh.source)}</span></div></div>
+      <div class="kpi"><div class="label">Premium lines shown</div><div class="value">{html.escape(str(data['premium_line_count']))}</div></div>
     </div>
   </div>
 
@@ -1015,6 +1054,7 @@ function refreshNow() {{ window.location.reload(); }}
       <div class="hero-line" style="margin-top:14px;">{best_balls_html}</div>
       <div class="hero-line">{best_stars_html}</div>
       <div id="best-line-copy" class="inline-cmd" style="margin-top:14px;">Main numbers: {html.escape(str(best['balls']))} | Stars: {html.escape(str(best['stars']))}</div>
+      {selector_links}
       <div class="actions">
         <button class="btn" onclick="copyBestLine()">Copy best line</button>
         <button class="btn alt" onclick="refreshNow()">Refresh now</button>
@@ -1059,7 +1099,7 @@ function refreshNow() {{ window.location.reload(); }}
     <div class="card">
       <div class="section-title">What to play</div>
       <p class="small-note"><strong>Fast rule:</strong> use the big line in <strong>Best line for next draw</strong>.</p>
-      <p class="small-note"><strong>Backup rule:</strong> use balanced first, then safe, then anti-last-draw if you want more variation.</p>
+      <p class="small-note"><strong>Line pack:</strong> 1, 3, 5 or 10 diversified lines using the selector buttons.</p>
       <p class="small-note"><strong>Avoid:</strong> copying the latest official draw into your next play.</p>
     </div>
   </div>
@@ -1070,22 +1110,22 @@ function refreshNow() {{ window.location.reload(); }}
   </div>
 
   <div class="card" style="margin-top:18px;">
-    <div class="section-title">Suggested lines</div>
+    <div class="section-title">Suggested premium lines</div>
     {suggested_table}
   </div>
 
   <div class="grid three" style="margin-top:18px;">
     <div class="card">
       <div class="section-title">Hot numbers (last 10 draws)</div>
-      {hot_last_10_table}
+      {data['hot_last_10_chart']}
     </div>
     <div class="card">
       <div class="section-title">Most overdue numbers</div>
-      {overdue_table}
+      {data['overdue_chart']}
     </div>
     <div class="card">
       <div class="section-title">Top frequent pairs</div>
-      {top_pairs_table}
+      {data['top_pairs_chart']}
     </div>
   </div>
 
