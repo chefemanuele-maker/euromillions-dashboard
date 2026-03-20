@@ -195,69 +195,185 @@ def load_local_history() -> pd.DataFrame:
     return df
 
 
+def validate_draw_row(row: Dict[str, object]) -> bool:
+    try:
+        balls = [int(row[f"ball_{i}"]) for i in range(1, 6)]
+        stars = [int(row["lucky_star_1"]), int(row["lucky_star_2"])]
+    except Exception:
+        return False
+
+    if len(balls) != 5 or len(stars) != 2:
+        return False
+    if len(set(balls)) != 5:
+        return False
+    if len(set(stars)) != 2:
+        return False
+    if not all(1 <= x <= 50 for x in balls):
+        return False
+    if not all(1 <= x <= 12 for x in stars):
+        return False
+
+    return True
+
+
 def parse_official_xml(text: str) -> pd.DataFrame:
     root = ET.fromstring(text)
     rows: List[Dict[str, object]] = []
 
     def local_name(tag_name: str) -> str:
-        return tag_name.split("}")[-1].lower()
+        return tag_name.split("}")[-1].lower().replace("-", "_")
+
+    def clean_text(value: Optional[str]) -> str:
+        return value.strip() if value else ""
+
+    def unique_preserve(seq: List[int]) -> List[int]:
+        out: List[int] = []
+        seen = set()
+        for x in seq:
+            if x not in seen:
+                seen.add(x)
+                out.append(x)
+        return out
+
+    def first_value(values_map: Dict[str, List[str]], keys: Sequence[str], default=pd.NA):
+        for key in keys:
+            vals = values_map.get(key)
+            if vals:
+                return vals[0]
+        return default
+
+    allowed_draw_tags = {
+        "draw",
+        "game_draw",
+        "draw_item",
+        "draw_row",
+        "drawdetails",
+        "draw_detail",
+        "result",
+        "results",
+    }
 
     for elem in root.iter():
         tag = local_name(elem.tag)
-        if "draw" not in tag:
+
+        if tag not in allowed_draw_tags and "draw" not in tag:
             continue
 
-        values_map: Dict[str, str] = {}
-        numeric_values: List[int] = []
+        values_map: Dict[str, List[str]] = {}
 
         for child in elem.iter():
-            name = local_name(child.tag)
-            if child.text:
-                value = child.text.strip()
-                values_map[name] = value
-                if re.fullmatch(r"\d{1,2}", value):
-                    numeric_values.append(int(value))
+            child_name = local_name(child.tag)
+            child_value = clean_text(child.text)
+            if not child_value:
+                continue
+            values_map.setdefault(child_name, []).append(child_value)
 
-        draw_date = (
-            values_map.get("draw-date")
-            or values_map.get("date")
-            or values_map.get("drawdate")
-        )
+        draw_date = None
+        for key in ["draw_date", "date", "drawdate", "draw_date_uk", "draw_date_iso"]:
+            vals = values_map.get(key, [])
+            for v in vals:
+                m = re.search(r"\d{4}-\d{2}-\d{2}", v)
+                if m:
+                    draw_date = m.group(0)
+                    break
+            if draw_date:
+                break
 
         if not draw_date:
-            for value in values_map.values():
-                match = re.search(r"\d{4}-\d{2}-\d{2}", value)
-                if match:
-                    draw_date = match.group(0)
+            for vals in values_map.values():
+                for v in vals:
+                    m = re.search(r"\d{4}-\d{2}-\d{2}", v)
+                    if m:
+                        draw_date = m.group(0)
+                        break
+                if draw_date:
                     break
 
         if not draw_date:
             continue
 
-        if len(numeric_values) < 7:
+        main_candidates: List[int] = []
+        star_candidates: List[int] = []
+
+        explicit_main_tags = {
+            "ball_1", "ball_2", "ball_3", "ball_4", "ball_5",
+            "main_ball_1", "main_ball_2", "main_ball_3", "main_ball_4", "main_ball_5",
+            "number_1", "number_2", "number_3", "number_4", "number_5",
+            "main_number_1", "main_number_2", "main_number_3", "main_number_4", "main_number_5",
+        }
+
+        explicit_star_tags = {
+            "lucky_star_1", "lucky_star_2",
+            "star_1", "star_2",
+            "star_number_1", "star_number_2",
+            "lucky_stars_1", "lucky_stars_2",
+        }
+
+        for key, vals in values_map.items():
+            for v in vals:
+                if not re.fullmatch(r"\d{1,2}", v):
+                    continue
+                n = int(v)
+
+                if key in explicit_main_tags:
+                    if 1 <= n <= 50:
+                        main_candidates.append(n)
+                elif key in explicit_star_tags:
+                    if 1 <= n <= 12:
+                        star_candidates.append(n)
+
+        if len(main_candidates) < 5 or len(star_candidates) < 2:
+            for key, vals in values_map.items():
+                key_l = key.lower()
+
+                if any(bad in key_l for bad in [
+                    "draw_number", "drawno", "machine", "set", "jackpot",
+                    "millionaire", "ukmm", "prize", "winner", "raffle",
+                    "amount", "count", "game", "id"
+                ]):
+                    continue
+
+                for v in vals:
+                    if not re.fullmatch(r"\d{1,2}", v):
+                        continue
+                    n = int(v)
+
+                    if "star" in key_l:
+                        if 1 <= n <= 12:
+                            star_candidates.append(n)
+                    elif "ball" in key_l or "number" in key_l:
+                        if 1 <= n <= 50:
+                            main_candidates.append(n)
+
+        main_candidates = unique_preserve(main_candidates)
+        star_candidates = unique_preserve(star_candidates)
+
+        if len(main_candidates) != 5 or len(star_candidates) != 2:
+            logger.warning(
+                "Skipping XML draw: invalid parsed candidates | date=%s | mains=%s | stars=%s",
+                draw_date, main_candidates, star_candidates
+            )
             continue
 
-        balls = sorted(numeric_values[:5])
-        stars = sorted(numeric_values[5:7])
+        balls = sorted(main_candidates)
+        stars = sorted(star_candidates)
 
         row: Dict[str, object] = {
             "draw_date": draw_date,
-            "draw_number": (
-                values_map.get("draw-number")
-                or values_map.get("draw-no")
-                or values_map.get("id")
-                or pd.NA
+            "draw_number": first_value(
+                values_map,
+                ["draw_number", "draw_no", "drawno", "id"],
+                default=pd.NA,
             ),
-            "jackpot": (
-                values_map.get("jackpot-amount")
-                or values_map.get("jackpot")
-                or pd.NA
+            "jackpot": first_value(
+                values_map,
+                ["jackpot_amount", "jackpot", "jackpot_value"],
+                default=pd.NA,
             ),
-            "uk_millionaire_maker": (
-                values_map.get("uk-millionaire-maker")
-                or values_map.get("ukmm-code")
-                or values_map.get("millionaire-maker-code")
-                or pd.NA
+            "uk_millionaire_maker": first_value(
+                values_map,
+                ["uk_millionaire_maker", "ukmm_code", "millionaire_maker_code"],
+                default=pd.NA,
             ),
             "source": "official_xml",
         }
@@ -266,6 +382,11 @@ def parse_official_xml(text: str) -> pd.DataFrame:
             row[f"ball_{i}"] = v
         row["lucky_star_1"] = stars[0]
         row["lucky_star_2"] = stars[1]
+
+        if not validate_draw_row(row):
+            logger.warning("Skipping XML draw: failed validation | row=%s", row)
+            continue
+
         rows.append(row)
 
     if not rows:
@@ -321,26 +442,43 @@ def parse_official_html_backup(text: str) -> pd.DataFrame:
 
         main_nums = _extract_json_array(
             chunk,
-            ["mainNumbers", "main_numbers", "balls", "numbers", "drawnNumbers"],
+            ["mainNumbers", "main_numbers", "drawnNumbers", "numbers", "balls"],
         )
         star_nums = _extract_json_array(
             chunk,
-            ["luckyStars", "lucky_stars", "stars", "starNumbers"],
+            ["luckyStars", "lucky_stars", "starNumbers", "stars"],
         )
 
         if not date_match or not main_nums or not star_nums:
             continue
 
-        draw_date_raw = date_match.group(1) if hasattr(date_match, "group") else None
+        draw_date_raw = date_match.group(1)
         parsed_date = pd.to_datetime(draw_date_raw, errors="coerce")
         if pd.isna(parsed_date):
             continue
 
-        balls = sorted(int(x) for x in main_nums[:5])
-        stars = sorted(int(x) for x in star_nums[:2])
+        main_nums = [int(x) for x in main_nums if 1 <= int(x) <= 50]
+        star_nums = [int(x) for x in star_nums if 1 <= int(x) <= 12]
 
-        if len(balls) != 5 or len(stars) != 2:
+        dedup_main = []
+        seen_main = set()
+        for x in main_nums:
+            if x not in seen_main:
+                seen_main.add(x)
+                dedup_main.append(x)
+
+        dedup_stars = []
+        seen_stars = set()
+        for x in star_nums:
+            if x not in seen_stars:
+                seen_stars.add(x)
+                dedup_stars.append(x)
+
+        if len(dedup_main) < 5 or len(dedup_stars) < 2:
             continue
+
+        balls = sorted(dedup_main[:5])
+        stars = sorted(dedup_stars[:2])
 
         row = {
             "draw_date": parsed_date.date().isoformat(),
@@ -353,6 +491,10 @@ def parse_official_html_backup(text: str) -> pd.DataFrame:
             "lucky_star_2": stars[1],
             "source": "official_html_backup",
         }
+
+        if not validate_draw_row(row):
+            logger.warning("Skipping HTML backup row: failed validation | row=%s", row)
+            continue
 
         parsed = standardize_columns(pd.DataFrame([row]))
         logger.info("Parsed HTML backup | latest=%s", parsed["draw_date"].max())
@@ -387,6 +529,9 @@ def refresh_history() -> Tuple[pd.DataFrame, RefreshResult]:
 
     try:
         official = fetch_official_xml()
+        if official.empty:
+            raise ValueError("Official XML returned no valid draws.")
+
         before = len(df)
         merged = dedupe_history(pd.concat([df, official], ignore_index=True))
         persist_history(merged)
@@ -414,6 +559,9 @@ def refresh_history() -> Tuple[pd.DataFrame, RefreshResult]:
 
         try:
             html_backup = fetch_official_html_backup()
+            if html_backup.empty:
+                raise ValueError("Official HTML backup returned no valid draws.")
+
             before = len(df)
             merged = dedupe_history(pd.concat([df, html_backup], ignore_index=True))
             persist_history(merged)
@@ -889,7 +1037,6 @@ def render_dashboard(data: Dict[str, object], refresh: RefreshResult) -> str:
         [("mode", "Mode"), ("balls", "Main numbers"), ("stars", "Stars"), ("sum_balls", "Sum"), ("odd_even", "Odd-Even"), ("low_high", "Low-High"), ("score", "Score")],
     )
 
-    status_class = "status-ok" if refresh.ok else "status-warn"
     refresh_text = f"{refresh.message} Added {refresh.draws_added} new draw(s)." if refresh.ok else refresh.message
     generated = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -912,12 +1059,12 @@ def render_dashboard(data: Dict[str, object], refresh: RefreshResult) -> str:
     """
 
     return f"""<!doctype html>
-<html lang="en">
+<html lang=\"en\">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset=\"utf-8\">
+<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
 <title>EuroMillions Live Dashboard</title>
-<meta http-equiv="refresh" content="900">
+<meta http-equiv=\"refresh\" content=\"900\">
 <style>
 :root {{
   --bg-0:#02060c;
@@ -964,8 +1111,6 @@ body {{
   border:1px solid rgba(0,255,156,.15); background:rgba(0,255,156,.06); color:var(--neon);
   text-transform:uppercase; letter-spacing:.08em;
 }}
-.status-ok {{ color:var(--safe); }}
-.status-warn {{ color:#ffb3b3; }}
 .section-title {{ font-size: 24px; margin: 0 0 12px; }}
 .kpi-grid {{ display:grid; grid-template-columns: repeat(4,1fr); gap:12px; margin-top:16px; }}
 .kpi {{ background:rgba(0,255,156,.04); border:1px solid rgba(0,255,156,.1); border-radius:16px; padding:12px; }}
@@ -1032,115 +1177,115 @@ function refreshNow() {{ window.location.reload(); }}
 </script>
 </head>
 <body>
-<div class="wrap">
+<div class=\"wrap\">
 
-  <div class="card">
-    <div class="badge">EuroMillions live premium model</div>
-    <div class="hero-title">EuroMillions premium analytics dashboard</div>
-    <div class="sub">Live refresh, XML primary source, HTML fallback, local cache safety, hot numbers, overdue numbers, frequent pairs, anti-last-draw lines, premium line pack, and lightweight charts.</div>
+  <div class=\"card\">
+    <div class=\"badge\">EuroMillions live premium model</div>
+    <div class=\"hero-title\">EuroMillions premium analytics dashboard</div>
+    <div class=\"sub\">Live refresh, XML primary source, HTML fallback, local cache safety, hot numbers, overdue numbers, frequent pairs, anti-last-draw lines, premium line pack, and lightweight charts.</div>
 
-    <div class="kpi-grid">
-      <div class="kpi"><div class="label">Generated</div><div class="value">{html.escape(generated)}</div></div>
-      <div class="kpi"><div class="label">History range</div><div class="value">{html.escape(str(data['history_start']))}<br><span class="tiny">to {html.escape(str(data['history_end']))}</span></div></div>
-      <div class="kpi"><div class="label">Stored draws</div><div class="value">{data['history_rows']}</div></div>
-      <div class="kpi"><div class="label">Premium lines shown</div><div class="value">{html.escape(str(data['premium_line_count']))}</div></div>
+    <div class=\"kpi-grid\">
+      <div class=\"kpi\"><div class=\"label\">Generated</div><div class=\"value\">{html.escape(generated)}</div></div>
+      <div class=\"kpi\"><div class=\"label\">History range</div><div class=\"value\">{html.escape(str(data['history_start']))}<br><span class=\"tiny\">to {html.escape(str(data['history_end']))}</span></div></div>
+      <div class=\"kpi\"><div class=\"label\">Stored draws</div><div class=\"value\">{data['history_rows']}</div></div>
+      <div class=\"kpi\"><div class=\"label\">Premium lines shown</div><div class=\"value\">{html.escape(str(data['premium_line_count']))}</div></div>
     </div>
   </div>
 
-  <div class="grid top" style="margin-top:18px;">
-    <div class="card">
-      <div class="section-title">Best line for next draw</div>
+  <div class=\"grid top\" style=\"margin-top:18px;\">
+    <div class=\"card\">
+      <div class=\"section-title\">Best line for next draw</div>
       <div>{mode_chip(str(data['best_line_mode']))}</div>
-      <div class="hero-line" style="margin-top:14px;">{best_balls_html}</div>
-      <div class="hero-line">{best_stars_html}</div>
-      <div id="best-line-copy" class="inline-cmd" style="margin-top:14px;">Main numbers: {html.escape(str(best['balls']))} | Stars: {html.escape(str(best['stars']))}</div>
+      <div class=\"hero-line\" style=\"margin-top:14px;\">{best_balls_html}</div>
+      <div class=\"hero-line\">{best_stars_html}</div>
+      <div id=\"best-line-copy\" class=\"inline-cmd\" style=\"margin-top:14px;\">Main numbers: {html.escape(str(best['balls']))} | Stars: {html.escape(str(best['stars']))}</div>
       {selector_links}
-      <div class="actions">
-        <button class="btn" onclick="copyBestLine()">Copy best line</button>
-        <button class="btn alt" onclick="refreshNow()">Refresh now</button>
-        <a class="btn alt" href="/download/suggested">Download suggested CSV</a>
-        <span id="copy-status" class="small-note"></span>
+      <div class=\"actions\">
+        <button class=\"btn\" onclick=\"copyBestLine()\">Copy best line</button>
+        <button class=\"btn alt\" onclick=\"refreshNow()\">Refresh now</button>
+        <a class=\"btn alt\" href=\"/download/suggested\">Download suggested CSV</a>
+        <span id=\"copy-status\" class=\"small-note\"></span>
       </div>
-      <div class="best-meta">
-        <div class="box"><div class="tiny">Score</div><div class="v">{html.escape(str(best['score']))}</div></div>
-        <div class="box"><div class="tiny">Sum</div><div class="v">{html.escape(str(best['sum_balls']))}</div></div>
-        <div class="box"><div class="tiny">Odd-Even</div><div class="v">{html.escape(str(best['odd_even']))}</div></div>
-        <div class="box"><div class="tiny">Low-High</div><div class="v">{html.escape(str(best['low_high']))}</div></div>
+      <div class=\"best-meta\">
+        <div class=\"box\"><div class=\"tiny\">Score</div><div class=\"v\">{html.escape(str(best['score']))}</div></div>
+        <div class=\"box\"><div class=\"tiny\">Sum</div><div class=\"v\">{html.escape(str(best['sum_balls']))}</div></div>
+        <div class=\"box\"><div class=\"tiny\">Odd-Even</div><div class=\"v\">{html.escape(str(best['odd_even']))}</div></div>
+        <div class=\"box\"><div class=\"tiny\">Low-High</div><div class=\"v\">{html.escape(str(best['low_high']))}</div></div>
       </div>
-      <p class="small-note" style="margin-top:14px;">{html.escape(str(data['best_line_reason']))}</p>
+      <p class=\"small-note\" style=\"margin-top:14px;\">{html.escape(str(data['best_line_reason']))}</p>
     </div>
 
-    <div class="card">
-      <div class="section-title">Sync / machine status</div>
-      <p class="small-note">{html.escape(refresh_text)}</p>
-      <div class="tiny">Last attempt: {html.escape(str(last_attempt_at))}</div>
-      <div class="tiny">Last success: {html.escape(str(last_success_at))}</div>
-      <div class="tiny">Last success source: {html.escape(str(last_success_source))}</div>
-      <div class="actions">
-        <a class="btn" href="/admin/refresh">Open refresh JSON</a>
-        <a class="btn alt" href="/download/history">Download history CSV</a>
+    <div class=\"card\">
+      <div class=\"section-title\">Sync / machine status</div>
+      <p class=\"small-note\">{html.escape(refresh_text)}</p>
+      <div class=\"tiny\">Last attempt: {html.escape(str(last_attempt_at))}</div>
+      <div class=\"tiny\">Last success: {html.escape(str(last_success_at))}</div>
+      <div class=\"tiny\">Last success source: {html.escape(str(last_success_source))}</div>
+      <div class=\"actions\">
+        <a class=\"btn\" href=\"/admin/refresh\">Open refresh JSON</a>
+        <a class=\"btn alt\" href=\"/download/history\">Download history CSV</a>
       </div>
     </div>
   </div>
 
-  <div class="grid top" style="margin-top:18px; grid-template-columns: 1fr 1fr;">
-    <div class="card">
-      <div class="section-title">Latest official draw in your history</div>
-      <div class="tiny">Draw date: {html.escape(str(latest['date']))}</div>
-      <div class="balls">{balls_html}</div>
-      <div class="balls">{stars_html}</div>
-      <div class="kpi-grid" style="grid-template-columns: repeat(3,1fr);">
-        <div class="kpi"><div class="label">Draw number</div><div class="value">{html.escape(str(latest['draw_number'])) or '-'}</div></div>
-        <div class="kpi"><div class="label">Jackpot</div><div class="value">{html.escape(str(latest['jackpot'])) or '-'}</div></div>
-        <div class="kpi"><div class="label">UK MM code</div><div class="value" style="font-size:16px;">{html.escape(str(latest['uk_code'])) or '-'}</div></div>
+  <div class=\"grid top\" style=\"margin-top:18px; grid-template-columns: 1fr 1fr;\">
+    <div class=\"card\">
+      <div class=\"section-title\">Latest official draw in your history</div>
+      <div class=\"tiny\">Draw date: {html.escape(str(latest['date']))}</div>
+      <div class=\"balls\">{balls_html}</div>
+      <div class=\"balls\">{stars_html}</div>
+      <div class=\"kpi-grid\" style=\"grid-template-columns: repeat(3,1fr);\">
+        <div class=\"kpi\"><div class=\"label\">Draw number</div><div class=\"value\">{html.escape(str(latest['draw_number'])) or '-'}</div></div>
+        <div class=\"kpi\"><div class=\"label\">Jackpot</div><div class=\"value\">{html.escape(str(latest['jackpot'])) or '-'}</div></div>
+        <div class=\"kpi\"><div class=\"label\">UK MM code</div><div class=\"value\" style=\"font-size:16px;\">{html.escape(str(latest['uk_code'])) or '-'}</div></div>
       </div>
     </div>
 
-    <div class="card">
-      <div class="section-title">What to play</div>
-      <p class="small-note"><strong>Fast rule:</strong> use the big line in <strong>Best line for next draw</strong>.</p>
-      <p class="small-note"><strong>Line pack:</strong> 1, 3, 5 or 10 diversified lines using the selector buttons.</p>
-      <p class="small-note"><strong>Avoid:</strong> copying the latest official draw into your next play.</p>
+    <div class=\"card\">
+      <div class=\"section-title\">What to play</div>
+      <p class=\"small-note\"><strong>Fast rule:</strong> use the big line in <strong>Best line for next draw</strong>.</p>
+      <p class=\"small-note\"><strong>Line pack:</strong> 1, 3, 5 or 10 diversified lines using the selector buttons.</p>
+      <p class=\"small-note\"><strong>Avoid:</strong> copying the latest official draw into your next play.</p>
     </div>
   </div>
 
-  <div class="card" style="margin-top:18px;">
-    <div class="section-title">Latest 10 draws</div>
+  <div class=\"card\" style=\"margin-top:18px;\">
+    <div class=\"section-title\">Latest 10 draws</div>
     {recent_draws_table}
   </div>
 
-  <div class="card" style="margin-top:18px;">
-    <div class="section-title">Suggested premium lines</div>
+  <div class=\"card\" style=\"margin-top:18px;\">
+    <div class=\"section-title\">Suggested premium lines</div>
     {suggested_table}
   </div>
 
-  <div class="grid three" style="margin-top:18px;">
-    <div class="card">
-      <div class="section-title">Hot numbers (last 10 draws)</div>
+  <div class=\"grid three\" style=\"margin-top:18px;\">
+    <div class=\"card\">
+      <div class=\"section-title\">Hot numbers (last 10 draws)</div>
       {data['hot_last_10_chart']}
     </div>
-    <div class="card">
-      <div class="section-title">Most overdue numbers</div>
+    <div class=\"card\">
+      <div class=\"section-title\">Most overdue numbers</div>
       {data['overdue_chart']}
     </div>
-    <div class="card">
-      <div class="section-title">Top frequent pairs</div>
+    <div class=\"card\">
+      <div class=\"section-title\">Top frequent pairs</div>
       {data['top_pairs_chart']}
     </div>
   </div>
 
-  <div class="grid two" style="margin-top:18px;">
-    <div class="card">
-      <div class="section-title">Top 10 main numbers</div>
+  <div class=\"grid two\" style=\"margin-top:18px;\">
+    <div class=\"card\">
+      <div class=\"section-title\">Top 10 main numbers</div>
       {main_table}
     </div>
-    <div class="card">
-      <div class="section-title">Top 10 stars</div>
+    <div class=\"card\">
+      <div class=\"section-title\">Top 10 stars</div>
       {star_table}
     </div>
   </div>
 
-  <div class="card footer">
+  <div class=\"card footer\">
     <strong>Model notes.</strong> Ball-sum mean in your history: <strong>{html.escape(str(data['sum_mean']))}</strong> | standard deviation: <strong>{html.escape(str(data['sum_std']))}</strong>
   </div>
 
