@@ -226,127 +226,77 @@ def parse_official_xml(text: str) -> pd.DataFrame:
     def clean_text(value: Optional[str]) -> str:
         return value.strip() if value else ""
 
-    def unique_preserve(seq: List[int]) -> List[int]:
-        out: List[int] = []
-        seen = set()
-        for x in seq:
-            if x not in seen:
-                seen.add(x)
-                out.append(x)
-        return out
-
-    def first_value(values_map: Dict[str, List[str]], keys: Sequence[str], default=pd.NA):
-        for key in keys:
-            vals = values_map.get(key)
-            if vals:
-                return vals[0]
-        return default
-
-    allowed_draw_tags = {
-        "draw",
-        "game_draw",
-        "draw_item",
-        "draw_row",
-        "drawdetails",
-        "draw_detail",
-        "result",
-        "results",
-    }
-
-    for elem in root.iter():
-        tag = local_name(elem.tag)
-
-        if tag not in allowed_draw_tags and "draw" not in tag:
+    # ogni <game> contiene un blocco draw + balls
+    for game in root.iter():
+        if local_name(game.tag) != "game":
             continue
 
-        values_map: Dict[str, List[str]] = {}
+        draw_elem = None
+        balls_elem = None
 
-        for child in elem.iter():
-            child_name = local_name(child.tag)
-            child_value = clean_text(child.text)
-            if not child_value:
-                continue
-            values_map.setdefault(child_name, []).append(child_value)
+        for child in list(game):
+            child_tag = local_name(child.tag)
+            if child_tag == "draw":
+                draw_elem = child
+            elif child_tag == "balls":
+                balls_elem = child
 
+        if draw_elem is None or balls_elem is None:
+            continue
+
+        draw_number = pd.NA
         draw_date = None
-        for key in ["draw_date", "date", "drawdate", "draw_date_uk", "draw_date_iso"]:
-            vals = values_map.get(key, [])
-            for v in vals:
-                m = re.search(r"\d{4}-\d{2}-\d{2}", v)
+        jackpot = pd.NA
+        uk_millionaire_maker = pd.NA
+
+        for child in draw_elem:
+            tag = local_name(child.tag)
+            value = clean_text(child.text)
+
+            if not value:
+                continue
+
+            if tag == "draw_number":
+                draw_number = value
+            elif tag == "draw_date":
+                m = re.search(r"\d{4}-\d{2}-\d{2}", value)
                 if m:
                     draw_date = m.group(0)
-                    break
-            if draw_date:
-                break
-
-        if not draw_date:
-            for vals in values_map.values():
-                for v in vals:
-                    m = re.search(r"\d{4}-\d{2}-\d{2}", v)
-                    if m:
-                        draw_date = m.group(0)
-                        break
-                if draw_date:
-                    break
+            elif tag in {"jackpot", "jackpot_amount", "jackpot_value"}:
+                jackpot = value
+            elif tag in {"uk_millionaire_maker", "ukmm_code", "millionaire_maker_code"}:
+                uk_millionaire_maker = value
 
         if not draw_date:
             continue
 
         main_candidates: List[int] = []
         star_candidates: List[int] = []
+        raffle_codes: List[str] = []
 
-        explicit_main_tags = {
-            "ball_1", "ball_2", "ball_3", "ball_4", "ball_5",
-            "main_ball_1", "main_ball_2", "main_ball_3", "main_ball_4", "main_ball_5",
-            "number_1", "number_2", "number_3", "number_4", "number_5",
-            "main_number_1", "main_number_2", "main_number_3", "main_number_4", "main_number_5",
-        }
+        for child in balls_elem:
+            tag = local_name(child.tag)
+            value = clean_text(child.text)
 
-        explicit_star_tags = {
-            "lucky_star_1", "lucky_star_2",
-            "star_1", "star_2",
-            "star_number_1", "star_number_2",
-            "lucky_stars_1", "lucky_stars_2",
-        }
-
-        for key, vals in values_map.items():
-            for v in vals:
-                if not re.fullmatch(r"\d{1,2}", v):
-                    continue
-                n = int(v)
-
-                if key in explicit_main_tags:
+            if tag == "ball":
+                if re.fullmatch(r"\d{1,2}", value):
+                    n = int(value)
                     if 1 <= n <= 50:
                         main_candidates.append(n)
-                elif key in explicit_star_tags:
+
+            elif tag == "bonus_ball":
+                ball_type = (child.attrib.get("type") or "").strip().lower()
+                if ball_type == "luckystar" and re.fullmatch(r"\d{1,2}", value):
+                    n = int(value)
                     if 1 <= n <= 12:
                         star_candidates.append(n)
 
-        if len(main_candidates) < 5 or len(star_candidates) < 2:
-            for key, vals in values_map.items():
-                key_l = key.lower()
-
-                if any(bad in key_l for bad in [
-                    "draw_number", "drawno", "machine", "set", "jackpot",
-                    "millionaire", "ukmm", "prize", "winner", "raffle",
-                    "amount", "count", "game", "id"
-                ]):
-                    continue
-
-                for v in vals:
-                    if not re.fullmatch(r"\d{1,2}", v):
-                        continue
-                    n = int(v)
-
-                    if "star" in key_l:
-                        if 1 <= n <= 12:
-                            star_candidates.append(n)
-                    elif "ball" in key_l or "number" in key_l:
-                        if 1 <= n <= 50:
-                            main_candidates.append(n)
-
-        main_candidates = unique_preserve(main_candidates)
-        star_candidates = unique_preserve(star_candidates)
+            elif tag == "raffles":
+                for raffle_child in child:
+                    raffle_tag = local_name(raffle_child.tag)
+                    raffle_value = clean_text(raffle_child.text)
+                    if raffle_tag == "raffle" and raffle_value:
+                        raffle_codes.append(raffle_value)
 
         if len(main_candidates) != 5 or len(star_candidates) != 2:
             logger.warning(
@@ -360,21 +310,9 @@ def parse_official_xml(text: str) -> pd.DataFrame:
 
         row: Dict[str, object] = {
             "draw_date": draw_date,
-            "draw_number": first_value(
-                values_map,
-                ["draw_number", "draw_no", "drawno", "id"],
-                default=pd.NA,
-            ),
-            "jackpot": first_value(
-                values_map,
-                ["jackpot_amount", "jackpot", "jackpot_value"],
-                default=pd.NA,
-            ),
-            "uk_millionaire_maker": first_value(
-                values_map,
-                ["uk_millionaire_maker", "ukmm_code", "millionaire_maker_code"],
-                default=pd.NA,
-            ),
+            "draw_number": draw_number,
+            "jackpot": jackpot,
+            "uk_millionaire_maker": ", ".join(raffle_codes) if raffle_codes else uk_millionaire_maker,
             "source": "official_xml",
         }
 
