@@ -415,6 +415,8 @@ def fetch_official_xml(timeout: int = 20) -> pd.DataFrame:
     if not text:
         raise ValueError("Official XML response is empty.")
 
+    logger.info("Official XML first 1500 chars:\n%s", text[:1500])
+
     return parse_official_xml(text)
 
 
