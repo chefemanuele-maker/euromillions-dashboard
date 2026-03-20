@@ -267,6 +267,25 @@ def parse_official_xml(text: str) -> pd.DataFrame:
             elif tag in {"uk_millionaire_maker", "ukmm_code", "millionaire_maker_code"}:
                 uk_millionaire_maker = value
 
+              # fallback jackpot scan across the whole <game> block
+        if pd.isna(jackpot):
+            for node in game.iter():
+                node_tag = local_name(node.tag)
+                node_value = clean_text(node.text)
+
+                if not node_value:
+                    continue
+
+                if node_tag in {
+                    "jackpot",
+                    "jackpot_amount",
+                    "jackpot_value",
+                    "estimated_jackpot",
+                    "prize_pool",
+                }:
+                    jackpot = node_value
+                    break  
+
         if not draw_date:
             continue
 
