@@ -16,6 +16,15 @@ euro.REFRESH_STATE_FILE = BASE / "euromillions_refresh_state.json"
 euro.ensure_base_dir = lambda: None
 
 
+def admin_authorized() -> bool:
+    token = os.environ.get("ADMIN_REFRESH_TOKEN", "").strip()
+    # For public deployments, leave admin refresh disabled unless a token is set.
+    if not token:
+        return False
+    supplied = request.args.get("token") or request.headers.get("X-Admin-Token") or ""
+    return supplied == token
+
+
 @app.route("/")
 def home():
     return """
@@ -41,7 +50,7 @@ def home():
         <h1>EuroMillions Dashboard</h1>
         <p>Server running on Render</p>
         <a href="/euromillions">Open EuroMillions Dashboard</a>
-        <a href="/admin/refresh">Run Admin Refresh Check</a>
+        <!-- Admin refresh is token-protected. Use Render cron/job or /euromillions auto-refresh. -->
         <a href="/download/history">Download History CSV</a>
         <a href="/download/suggested">Download Suggested Lines CSV</a>
     </body>
@@ -80,6 +89,12 @@ def euromillions():
 
 @app.route("/admin/refresh")
 def admin_refresh():
+    if not admin_authorized():
+        return jsonify({
+            "ok": False,
+            "error": "admin_refresh_locked",
+            "message": "Set ADMIN_REFRESH_TOKEN and call with ?token=... or X-Admin-Token."
+        }), 403
     try:
         df, refresh = euro.refresh_history()
         state = euro.load_refresh_state()
@@ -90,6 +105,7 @@ def admin_refresh():
             "draws_added": refresh.draws_added,
             "latest_date": refresh.latest_date,
             "rows": len(df),
+            "quality": euro.history_quality_report(df),
             "last_success_at": state.get("last_success_at"),
             "last_attempt_at": state.get("last_attempt_at"),
             "local_history_file": str(euro.LOCAL_HISTORY),

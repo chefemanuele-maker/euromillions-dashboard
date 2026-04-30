@@ -483,84 +483,212 @@ def fetch_official_html_backup(timeout: int = 20) -> pd.DataFrame:
     return parse_official_html_backup(text)
 
 
+
+def fetch_lottery_archive_year(year: int, timeout: int = 20) -> pd.DataFrame:
+    """Fetch one public archive year from lottery.co.uk.
+
+    The National Lottery XML currently exposes only the latest draw, so this
+    archive source is used to fill recent gaps in the local CSV. We keep it as
+    a secondary source and still let the official XML overwrite/confirm the
+    latest draw when both are available.
+    """
+    url = f"https://www.lottery.co.uk/euromillions/results/archive-{year}"
+    headers = {"User-Agent": USER_AGENT, "Accept": "text/html,*/*"}
+    logger.info("Fetching lottery.co.uk archive: %s", url)
+    resp = requests.get(url, headers=headers, timeout=timeout)
+    logger.info("lottery.co.uk archive response status: %s", resp.status_code)
+    resp.raise_for_status()
+    text = resp.text
+
+    # Each row contains a link like /euromillions/results-28-04-2026 followed by
+    # 5 main balls, 2 lucky stars, a Millionaire Maker/code text, and jackpot.
+    pattern = re.compile(
+        r'href=["\']/euromillions/results-(\d{2})-(\d{2})-(\d{4})["\'][^>]*>.*?</a>(.*?)'
+        r'(?=href=["\']/euromillions/results-\d{2}-\d{2}-\d{4}["\']|EuroMillions Results Archive Years|</body>)',
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    rows: List[Dict[str, object]] = []
+    for match in pattern.finditer(text):
+        day, month, row_year, chunk = match.groups()
+        draw_date = f"{row_year}-{month}-{day}"
+        visible = re.sub(r"<[^>]+>", " ", chunk)
+        visible = html.unescape(re.sub(r"\s+", " ", visible)).strip()
+        nums = [int(x) for x in re.findall(r"\b\d{1,2}\b", visible)]
+        if len(nums) < 7:
+            logger.warning("Skipping archive row with too few numbers | date=%s | text=%s", draw_date, visible[:160])
+            continue
+
+        balls = sorted(nums[:5])
+        stars = sorted(nums[5:7])
+        jackpot_match = re.search(r"£\s*([0-9,.]+)", visible)
+        code_match = re.search(r"\b[A-Z]{4}\d{5}\b", visible)
+
+        row: Dict[str, object] = {
+            "draw_date": draw_date,
+            "ball_1": balls[0],
+            "ball_2": balls[1],
+            "ball_3": balls[2],
+            "ball_4": balls[3],
+            "ball_5": balls[4],
+            "lucky_star_1": stars[0],
+            "lucky_star_2": stars[1],
+            "uk_millionaire_maker": code_match.group(0) if code_match else pd.NA,
+            "jackpot": jackpot_match.group(1) if jackpot_match else pd.NA,
+            "source": "lottery_archive",
+        }
+        if validate_draw_row(row):
+            rows.append(row)
+        else:
+            logger.warning("Skipping archive row: failed validation | row=%s", row)
+
+    if not rows:
+        raise ValueError(f"No draw rows parsed from lottery.co.uk archive {year}.")
+
+    parsed = standardize_columns(pd.DataFrame(rows))
+    logger.info("Parsed lottery.co.uk archive | year=%s | rows=%s | latest=%s", year, len(parsed), parsed["draw_date"].max())
+    return parsed
+
+
+def fetch_recent_archive_history(df: pd.DataFrame) -> pd.DataFrame:
+    """Fetch current/recent archive years to fill gaps after the bundled CSV."""
+    today_year = dt.date.today().year
+    years = {today_year}
+    if not df.empty:
+        latest = pd.to_datetime(df["draw_date"], errors="coerce").max()
+        if not pd.isna(latest):
+            years.add(int(latest.year))
+            # If the local CSV stops near year-end, include the next year too.
+            if int(latest.year) < today_year:
+                years.add(int(latest.year) + 1)
+
+    frames: List[pd.DataFrame] = []
+    for year in sorted(y for y in years if 2004 <= y <= today_year):
+        try:
+            frames.append(fetch_lottery_archive_year(year))
+        except Exception as exc:
+            logger.warning("Archive fetch skipped for year=%s | reason=%s", year, exc)
+
+    if not frames:
+        return pd.DataFrame()
+    return standardize_columns(pd.concat(frames, ignore_index=True))
+
+
+def expected_draw_dates(start: dt.date, end: dt.date) -> List[dt.date]:
+    # EuroMillions started weekly on Fridays, then added Tuesdays in May 2011.
+    tuesday_start = dt.date(2011, 5, 10)
+    out: List[dt.date] = []
+    cur = start
+    while cur <= end:
+        if cur.weekday() == 4 or (cur >= tuesday_start and cur.weekday() == 1):
+            out.append(cur)
+        cur += dt.timedelta(days=1)
+    return out
+
+
+def history_quality_report(df: pd.DataFrame) -> Dict[str, object]:
+    if df.empty:
+        return {"ok": False, "missing_recent_count": 0, "missing_recent_dates": [], "notes": ["History is empty."]}
+
+    hist_dates = set(pd.to_datetime(df["draw_date"], errors="coerce").dt.date.dropna().tolist())
+    start = max(min(hist_dates), dt.date.today() - dt.timedelta(days=180))
+    end = max(hist_dates)
+    expected = expected_draw_dates(start, end)
+    missing = [d.isoformat() for d in expected if d not in hist_dates]
+
+    duplicate_dates = int(pd.to_datetime(df["draw_date"], errors="coerce").dt.date.duplicated().sum())
+    invalid_rows = 0
+    for _, row in df.iterrows():
+        if not validate_draw_row(row.to_dict()):
+            invalid_rows += 1
+
+    notes = []
+    if missing:
+        notes.append(f"Missing {len(missing)} expected Tue/Fri draw date(s) in the last 180 days.")
+    if duplicate_dates:
+        notes.append(f"Found {duplicate_dates} duplicate draw date(s).")
+    if invalid_rows:
+        notes.append(f"Found {invalid_rows} invalid draw row(s).")
+    if not notes:
+        notes.append("Recent history completeness check passed.")
+
+    return {
+        "ok": not missing and duplicate_dates == 0 and invalid_rows == 0,
+        "missing_recent_count": len(missing),
+        "missing_recent_dates": missing[:20],
+        "duplicate_dates": duplicate_dates,
+        "invalid_rows": invalid_rows,
+        "notes": notes,
+    }
+
 def refresh_history() -> Tuple[pd.DataFrame, RefreshResult]:
     df = load_local_history()
+    before = len(df)
+    sources: List[str] = []
+    warnings: List[str] = []
+
+    try:
+        archive = fetch_recent_archive_history(df)
+        if not archive.empty:
+            df = dedupe_history(pd.concat([df, archive], ignore_index=True))
+            sources.append("lottery_archive")
+    except Exception as archive_exc:
+        logger.exception("Recent archive refresh failed")
+        warnings.append(f"Archive refresh failed: {archive_exc}")
 
     try:
         official = fetch_official_xml()
         if official.empty:
             raise ValueError("Official XML returned no valid draws.")
-
-        before = len(df)
-        merged = dedupe_history(pd.concat([df, official], ignore_index=True))
-        persist_history(merged)
-        added = len(merged) - before
-        latest_date = str(merged["draw_date"].max())
-
-        result = RefreshResult(
-            source="official_xml",
-            ok=True,
-            message="Official refresh complete.",
-            draws_added=max(0, added),
-            latest_date=latest_date,
-        )
-        save_refresh_state(
-            ok=result.ok,
-            source=result.source,
-            message=result.message,
-            draws_added=result.draws_added,
-            latest_date=result.latest_date,
-        )
-        return merged, result
-
+        df = dedupe_history(pd.concat([df, official], ignore_index=True))
+        sources.append("official_xml")
     except Exception as xml_exc:
         logger.exception("Official XML refresh failed")
+        warnings.append(f"Official XML failed: {xml_exc}")
 
         try:
             html_backup = fetch_official_html_backup()
             if html_backup.empty:
                 raise ValueError("Official HTML backup returned no valid draws.")
-
-            before = len(df)
-            merged = dedupe_history(pd.concat([df, html_backup], ignore_index=True))
-            persist_history(merged)
-            added = len(merged) - before
-            latest_date = str(merged["draw_date"].max())
-
-            result = RefreshResult(
-                source="official_html_backup",
-                ok=True,
-                message=f"XML failed, HTML backup refresh complete. ({xml_exc})",
-                draws_added=max(0, added),
-                latest_date=latest_date,
-            )
-            save_refresh_state(
-                ok=result.ok,
-                source=result.source,
-                message=result.message,
-                draws_added=result.draws_added,
-                latest_date=result.latest_date,
-            )
-            return merged, result
-
+            df = dedupe_history(pd.concat([df, html_backup], ignore_index=True))
+            sources.append("official_html_backup")
         except Exception as html_exc:
             logger.exception("Official HTML backup refresh failed")
-            latest_date = str(df["draw_date"].max()) if not df.empty else None
-            result = RefreshResult(
-                source="local_cache",
-                ok=False,
-                message=f"Official source unavailable. Using local cache. (XML: {xml_exc}) (HTML: {html_exc})",
-                draws_added=0,
-                latest_date=latest_date,
-            )
-            save_refresh_state(
-                ok=result.ok,
-                source=result.source,
-                message=result.message,
-                draws_added=result.draws_added,
-                latest_date=result.latest_date,
-            )
-            return df, result
+            warnings.append(f"HTML backup failed: {html_exc}")
+
+    persist_history(df)
+    added = max(0, len(df) - before)
+    latest_date = str(df["draw_date"].max()) if not df.empty else None
+    quality = history_quality_report(df)
+
+    ok = bool(sources) and bool(quality.get("ok", False))
+    if sources:
+        source = "+".join(sources)
+        message = "Refresh complete."
+    else:
+        source = "local_cache"
+        message = "Official/archive sources unavailable. Using local cache."
+
+    if warnings:
+        message += " Warnings: " + " | ".join(warnings[:2])
+    if not quality.get("ok", False):
+        message += " Data quality warning: " + " ".join(str(x) for x in quality.get("notes", []))
+
+    result = RefreshResult(
+        source=source,
+        ok=ok,
+        message=message,
+        draws_added=added,
+        latest_date=latest_date,
+    )
+    save_refresh_state(
+        ok=result.ok,
+        source=result.source,
+        message=result.message,
+        draws_added=result.draws_added,
+        latest_date=result.latest_date,
+    )
+    return df, result
 
 
 def enrich_history(df: pd.DataFrame) -> pd.DataFrame:
@@ -921,6 +1049,7 @@ def build_dashboard_data(df: pd.DataFrame, premium_line_count: int = 5) -> Dict[
     hot_last_10_chart = simple_bar_chart_html(hot_last_10, "number", "seen_last_n", "Hot numbers")
     overdue_chart = simple_bar_chart_html(overdue, "number", "draws_since_seen", "Overdue numbers")
     top_pairs_chart = simple_bar_chart_html(top_pairs, "pair", "count", "Top pairs")
+    quality = history_quality_report(hist)
 
     return {
         "history_rows": len(hist),
@@ -944,6 +1073,7 @@ def build_dashboard_data(df: pd.DataFrame, premium_line_count: int = 5) -> Dict[
         "overdue_chart": overdue_chart,
         "top_pairs_chart": top_pairs_chart,
         "premium_line_count": premium_line_count,
+        "quality": quality,
     }
 
 
@@ -978,6 +1108,14 @@ def render_dashboard(data: Dict[str, object], refresh: RefreshResult) -> str:
     latest = data["latest_draw"]
     best = data["best_line"]
     state = data.get("refresh_state", {})
+    quality = data.get("quality", {})
+    quality_notes = quality.get("notes", []) if isinstance(quality, dict) else []
+    quality_class = "ok" if isinstance(quality, dict) and quality.get("ok") else "warn"
+    quality_title = "DATA QUALITY OK" if quality_class == "ok" else "DATA QUALITY WARNING"
+    quality_html = "".join(f"<li>{html.escape(str(note))}</li>" for note in quality_notes)
+    if isinstance(quality, dict) and quality.get("missing_recent_dates"):
+        missing = ", ".join(str(x) for x in quality.get("missing_recent_dates", [])[:12])
+        quality_html += f"<li>Missing recent dates: {html.escape(missing)}</li>"
 
     main_table = render_table(
         data["main_top10"],
@@ -1026,101 +1164,178 @@ def render_dashboard(data: Dict[str, object], refresh: RefreshResult) -> str:
 <meta http-equiv=\"refresh\" content=\"900\">
 <style>
 :root {{
-  --bg-0:#02060c;
-  --bg-1:#07131a;
-  --text:#dbfff5;
-  --muted:#90b5ab;
+  --bg-0:#020204;
+  --bg-1:#050b10;
+  --panel:#07100d;
+  --panel-2:#020806;
+  --text:#d7fff2;
+  --muted:#73a99a;
   --neon:#00ff9c;
+  --cyan:#00d8ff;
+  --pink:#ff2bd6;
   --gold:#ffd54a;
+  --red:#ff3864;
   --safe:#0bcf7a;
   --balanced:#00d8ff;
-  --aggr:#ff6b6b;
-  --anti:#d18cff;
-  --shadow:0 0 0 1px rgba(0,255,156,.08), 0 0 24px rgba(0,255,156,.08), inset 0 0 0 1px rgba(255,255,255,.02);
+  --aggr:#ff3864;
+  --anti:#bc6cff;
+  --shadow:0 0 0 1px rgba(0,255,156,.16), 0 0 34px rgba(0,255,156,.16), inset 0 0 0 1px rgba(255,255,255,.035);
+  --shadow-hot:0 0 14px rgba(0,255,156,.46), 0 0 42px rgba(0,216,255,.18);
 }}
 * {{ box-sizing:border-box; }}
+html {{ scroll-behavior:smooth; }}
 body {{
   margin:0;
   color:var(--text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   background:
-    radial-gradient(circle at top left, rgba(0,255,156,.08), transparent 24%),
-    radial-gradient(circle at top right, rgba(0,216,255,.08), transparent 24%),
-    linear-gradient(180deg, var(--bg-0), var(--bg-1) 45%, var(--bg-0));
+    radial-gradient(circle at 18% 8%, rgba(0,255,156,.16), transparent 23%),
+    radial-gradient(circle at 82% 2%, rgba(255,43,214,.12), transparent 22%),
+    radial-gradient(circle at 55% 90%, rgba(0,216,255,.10), transparent 25%),
+    linear-gradient(180deg, var(--bg-0), var(--bg-1) 48%, #010302);
   min-height:100vh;
+  overflow-x:hidden;
 }}
-.wrap {{ max-width: 1450px; margin: 0 auto; padding: 24px; }}
+body::before {{
+  content:"";
+  position:fixed;
+  inset:0;
+  pointer-events:none;
+  z-index:0;
+  background:
+    linear-gradient(rgba(0,255,156,.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,216,255,.025) 1px, transparent 1px);
+  background-size:36px 36px;
+  mask-image: radial-gradient(circle at center, black 0 58%, transparent 88%);
+}}
+body::after {{
+  content:"";
+  position:fixed;
+  inset:0;
+  pointer-events:none;
+  z-index:2;
+  background:repeating-linear-gradient(0deg, rgba(255,255,255,.035) 0 1px, transparent 1px 4px);
+  mix-blend-mode:overlay;
+  opacity:.18;
+}}
+.wrap {{ max-width: 1480px; margin: 0 auto; padding: 26px; position:relative; z-index:1; }}
 .grid {{ display:grid; gap:18px; }}
-.top {{ grid-template-columns: 1.3fr .7fr; }}
+.top {{ grid-template-columns: 1.32fr .68fr; }}
 .two {{ grid-template-columns: 1fr 1fr; }}
 .three {{ grid-template-columns: 1fr 1fr 1fr; }}
 .card {{
-  background: linear-gradient(180deg, rgba(9,17,24,.94), rgba(5,11,16,.94));
-  border:1px solid rgba(0,255,156,.12);
-  border-radius: 22px;
-  padding: 18px;
+  position:relative;
+  overflow:hidden;
+  background:
+    linear-gradient(135deg, rgba(0,255,156,.075), transparent 22%),
+    linear-gradient(180deg, rgba(7,16,13,.92), rgba(1,6,5,.96));
+  border:1px solid rgba(0,255,156,.20);
+  border-radius: 24px;
+  padding: 19px;
   box-shadow: var(--shadow);
+  backdrop-filter: blur(10px);
 }}
-.hero-title {{ font-size: 40px; line-height:1; margin: 6px 0 10px; letter-spacing:-1px; }}
-.sub {{ color: var(--muted); line-height:1.55; max-width: 950px; }}
+.card::before {{
+  content:"";
+  position:absolute;
+  inset:0;
+  pointer-events:none;
+  background:linear-gradient(90deg, transparent, rgba(0,255,156,.11), transparent);
+  transform:translateX(-120%);
+  animation: sweep 7s linear infinite;
+}}
+.card::after {{
+  content:"";
+  position:absolute;
+  left:18px; right:18px; top:0;
+  height:1px;
+  background:linear-gradient(90deg, transparent, rgba(0,255,156,.85), rgba(0,216,255,.75), transparent);
+}}
+@keyframes sweep {{ 0%,55% {{ transform:translateX(-120%); }} 70%,100% {{ transform:translateX(120%); }} }}
+.hero-title {{
+  font-size: clamp(34px, 5vw, 64px);
+  line-height:.92;
+  margin: 10px 0 12px;
+  letter-spacing:-2px;
+  color:#eafff8;
+  text-shadow: 0 0 8px rgba(0,255,156,.72), 0 0 28px rgba(0,216,255,.28);
+}}
+.hero-title::before {{ content:"> "; color:var(--neon); }}
+.sub {{ color: var(--muted); line-height:1.6; max-width: 990px; }}
 .tiny {{ color: var(--muted); font-size: 12px; }}
 .badge {{
   display:inline-flex; align-items:center; gap:8px;
-  padding:8px 12px; border-radius:999px; font-size:12px; font-weight:700;
-  border:1px solid rgba(0,255,156,.15); background:rgba(0,255,156,.06); color:var(--neon);
-  text-transform:uppercase; letter-spacing:.08em;
+  padding:8px 12px; border-radius:999px; font-size:12px; font-weight:900;
+  border:1px solid rgba(0,255,156,.34); background:rgba(0,255,156,.075); color:var(--neon);
+  text-transform:uppercase; letter-spacing:.12em;
+  box-shadow:0 0 18px rgba(0,255,156,.18);
 }}
-.section-title {{ font-size: 24px; margin: 0 0 12px; }}
-.kpi-grid {{ display:grid; grid-template-columns: repeat(4,1fr); gap:12px; margin-top:16px; }}
-.kpi {{ background:rgba(0,255,156,.04); border:1px solid rgba(0,255,156,.1); border-radius:16px; padding:12px; }}
-.kpi .label {{ color:var(--muted); font-size:12px; }}
-.kpi .value {{ font-size:19px; margin-top:5px; font-weight:800; }}
-.balls {{ display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }}
+.badge::before {{ content:"●"; color:var(--neon); text-shadow:0 0 9px var(--neon); animation:pulse 1.4s infinite; }}
+@keyframes pulse {{ 0%,100% {{ opacity:.35; }} 50% {{ opacity:1; }} }}
+.section-title {{ font-size: 22px; margin: 0 0 13px; letter-spacing:-.5px; text-shadow:0 0 12px rgba(0,255,156,.25); }}
+.section-title::before {{ content:"// "; color:var(--cyan); }}
+.kpi-grid {{ display:grid; grid-template-columns: repeat(4,1fr); gap:12px; margin-top:17px; }}
+.kpi {{ background:rgba(0,255,156,.045); border:1px solid rgba(0,255,156,.16); border-radius:17px; padding:13px; box-shadow: inset 0 0 24px rgba(0,255,156,.025); }}
+.kpi .label {{ color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.11em; }}
+.kpi .value {{ font-size:19px; margin-top:6px; font-weight:900; color:#f3fffb; }}
+.balls {{ display:flex; flex-wrap:wrap; gap:9px; margin-top:12px; }}
 .ball,.star {{
   width:46px; height:46px; display:inline-flex; align-items:center; justify-content:center;
-  border-radius:999px; font-weight:900; font-size:15px;
-  border:1px solid rgba(255,255,255,.08);
+  border-radius:14px; font-weight:1000; font-size:15px;
+  border:1px solid rgba(255,255,255,.12);
+  transform:skewX(-4deg);
 }}
-.ball {{ background:#ecfff8; color:#06110d; }}
-.star {{ background:var(--gold); color:#342400; }}
-.hero-line {{ display:flex; flex-wrap:wrap; gap:10px; margin: 14px 0; }}
-.hero-ball,.hero-star {{ width:58px; height:58px; font-size:18px; }}
+.ball {{ background:linear-gradient(180deg,#eafff8,#8fffd2); color:#04100b; box-shadow:0 0 18px rgba(0,255,156,.25); }}
+.star {{ background:linear-gradient(180deg,#fff0a0,var(--gold)); color:#2d2100; box-shadow:0 0 18px rgba(255,213,74,.28); }}
+.hero-line {{ display:flex; flex-wrap:wrap; gap:11px; margin: 14px 0; }}
+.hero-ball,.hero-star {{ width:60px; height:60px; font-size:19px; border-radius:18px; box-shadow:var(--shadow-hot); }}
 .best-meta {{ display:grid; grid-template-columns: repeat(4,1fr); gap:10px; margin-top:14px; }}
-.best-meta .box {{ background:rgba(0,216,255,.04); border:1px solid rgba(0,216,255,.12); border-radius:14px; padding:10px; }}
-.best-meta .box .v {{ font-weight:800; font-size:18px; margin-top:4px; }}
-.chip {{ display:inline-flex; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:800; letter-spacing:.08em; }}
+.best-meta .box {{ background:rgba(0,216,255,.055); border:1px solid rgba(0,216,255,.18); border-radius:15px; padding:11px; }}
+.best-meta .box .v {{ font-weight:900; font-size:18px; margin-top:4px; color:#e9fbff; }}
+.chip {{ display:inline-flex; padding:7px 11px; border-radius:999px; font-size:12px; font-weight:900; letter-spacing:.10em; border:1px solid currentColor; }}
 .chip.safe {{ background:rgba(11,207,122,.14); color:#8dffd0; }}
 .chip.balanced {{ background:rgba(0,216,255,.14); color:#9befff; }}
-.chip.aggressive {{ background:rgba(255,107,107,.14); color:#ffbaba; }}
-.chip.anti {{ background:rgba(209,140,255,.16); color:#e7c7ff; }}
-table {{ width:100%; border-collapse: collapse; }}
-th, td {{ border-bottom:1px solid rgba(255,255,255,.06); padding:11px 10px; text-align:left; font-size:14px; }}
-th {{ color:#b7ffe5; font-size:12px; letter-spacing:.08em; text-transform:uppercase; }}
-.inline-cmd {{ background:rgba(0,255,156,.08); border:1px solid rgba(0,255,156,.12); border-radius:12px; padding:10px 12px; color:#c8ffea; overflow-wrap:anywhere; }}
+.chip.aggressive {{ background:rgba(255,56,100,.14); color:#ff9ab0; }}
+.chip.anti {{ background:rgba(188,108,255,.16); color:#e7c7ff; }}
+table {{ width:100%; border-collapse: collapse; overflow:hidden; }}
+th, td {{ border-bottom:1px solid rgba(0,255,156,.09); padding:12px 10px; text-align:left; font-size:14px; }}
+th {{ color:#9dffe1; font-size:11px; letter-spacing:.12em; text-transform:uppercase; background:rgba(0,255,156,.04); }}
+tr:hover td {{ background:rgba(0,255,156,.045); color:#ffffff; }}
+.inline-cmd {{ background:#010604; border:1px solid rgba(0,255,156,.28); border-radius:14px; padding:12px 13px; color:#c8ffea; overflow-wrap:anywhere; box-shadow:inset 0 0 24px rgba(0,255,156,.05); }}
+.inline-cmd::before {{ content:"$ "; color:var(--neon); }}
 .actions {{ display:flex; gap:10px; flex-wrap:wrap; margin-top:12px; }}
 .btn {{
-  cursor:pointer; border:none; text-decoration:none;
-  padding:12px 16px; border-radius:14px; font-weight:800;
-  background:linear-gradient(180deg, rgba(0,255,156,.18), rgba(0,255,156,.08));
-  color:var(--text); border:1px solid rgba(0,255,156,.18);
-  display:inline-block;
+  cursor:pointer; text-decoration:none;
+  padding:12px 16px; border-radius:14px; font-weight:900;
+  background:linear-gradient(180deg, rgba(0,255,156,.20), rgba(0,255,156,.075));
+  color:var(--text); border:1px solid rgba(0,255,156,.32);
+  display:inline-block; box-shadow:0 0 18px rgba(0,255,156,.11);
+  transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
 }}
-.btn.alt {{ background:linear-gradient(180deg, rgba(0,216,255,.14), rgba(0,216,255,.08)); border-color:rgba(0,216,255,.18); }}
-.small-note {{ color:var(--muted); font-size:13px; line-height:1.5; }}
-.footer {{ margin-top:18px; color:var(--muted); font-size:13px; line-height:1.6; }}
-.mini-chart-title {{ font-size:14px; font-weight:800; margin-bottom:10px; color:#c8ffea; }}
+button.btn {{ font-family:inherit; }}
+.btn:hover {{ transform:translateY(-2px); border-color:rgba(0,255,156,.75); box-shadow:0 0 26px rgba(0,255,156,.24); }}
+.btn.alt {{ background:linear-gradient(180deg, rgba(0,216,255,.18), rgba(0,216,255,.07)); border-color:rgba(0,216,255,.30); }}
+.small-note {{ color:var(--muted); font-size:13px; line-height:1.55; }}
+.alert {{ margin-top:12px; border-radius:17px; padding:12px 14px; line-height:1.45; }}
+.alert.ok {{ border:1px solid rgba(11,207,122,.32); background:rgba(11,207,122,.09); color:#c8ffea; }}
+.alert.warn {{ border:1px solid rgba(255,213,74,.42); background:rgba(255,213,74,.11); color:#ffeaa0; }}
+.alert ul {{ margin:8px 0 0 18px; padding:0; }}
+.footer {{ margin-top:18px; color:var(--muted); font-size:13px; line-height:1.7; }}
+.mini-chart-title {{ font-size:14px; font-weight:900; margin-bottom:10px; color:#c8ffea; }}
 .bar-row {{ display:grid; grid-template-columns: 58px 1fr 54px; gap:8px; align-items:center; margin-bottom:8px; }}
 .bar-label {{ font-size:12px; color:#d9fff0; }}
-.bar-track {{ height:10px; background:rgba(255,255,255,.06); border-radius:999px; overflow:hidden; }}
-.bar-fill {{ height:100%; background:linear-gradient(90deg, rgba(0,255,156,.85), rgba(0,216,255,.85)); border-radius:999px; }}
+.bar-track {{ height:11px; background:rgba(255,255,255,.06); border:1px solid rgba(0,255,156,.08); border-radius:999px; overflow:hidden; }}
+.bar-fill {{ height:100%; background:linear-gradient(90deg, rgba(0,255,156,.95), rgba(0,216,255,.95), rgba(255,43,214,.72)); border-radius:999px; box-shadow:0 0 13px rgba(0,255,156,.32); }}
 .bar-value {{ font-size:12px; color:#b7ffe5; text-align:right; }}
 @media (max-width: 1100px) {{
   .top, .two, .three {{ grid-template-columns: 1fr; }}
   .kpi-grid, .best-meta {{ grid-template-columns: 1fr 1fr; }}
-  .hero-title {{ font-size:32px; }}
 }}
 @media (max-width: 620px) {{
+  .wrap {{ padding:14px; }}
   .kpi-grid, .best-meta {{ grid-template-columns: 1fr; }}
+  th, td {{ font-size:12px; padding:9px 7px; }}
+  .hero-ball,.hero-star {{ width:52px; height:52px; }}
 }}
 </style>
 <script>
@@ -1139,9 +1354,9 @@ function refreshNow() {{ window.location.reload(); }}
 <div class=\"wrap\">
 
   <div class=\"card\">
-    <div class=\"badge\">EuroMillions live premium model</div>
-    <div class=\"hero-title\">EuroMillions premium analytics dashboard</div>
-    <div class=\"sub\">Live refresh, XML primary source, HTML fallback, local cache safety, hot numbers, overdue numbers, frequent pairs, anti-last-draw lines, premium line pack, and lightweight charts.</div>
+    <div class=\"badge\">live hacker model</div>
+    <div class=\"hero-title\">EUROMILLIONS // ODDS ENGINE</div>
+    <div class=\"sub\">Neon command center for EuroMillions analytics: live refresh, archive repair, data-quality checks, hot/overdue signals, frequent pairs, anti-last-draw logic and premium line packs.</div>
 
     <div class=\"kpi-grid\">
       <div class=\"kpi\"><div class=\"label\">Generated</div><div class=\"value\">{html.escape(generated)}</div></div>
@@ -1153,7 +1368,7 @@ function refreshNow() {{ window.location.reload(); }}
 
   <div class=\"grid top\" style=\"margin-top:18px;\">
     <div class=\"card\">
-      <div class=\"section-title\">Best line for next draw</div>
+      <div class=\"section-title\">Target line for next draw</div>
       <div>{mode_chip(str(data['best_line_mode']))}</div>
       <div class=\"hero-line\" style=\"margin-top:14px;\">{best_balls_html}</div>
       <div class=\"hero-line\">{best_stars_html}</div>
@@ -1180,8 +1395,11 @@ function refreshNow() {{ window.location.reload(); }}
       <div class=\"tiny\">Last attempt: {html.escape(str(last_attempt_at))}</div>
       <div class=\"tiny\">Last success: {html.escape(str(last_success_at))}</div>
       <div class=\"tiny\">Last success source: {html.escape(str(last_success_source))}</div>
+      <div class=\"alert {quality_class}\">
+        <b>{quality_title}</b>
+        <ul>{quality_html}</ul>
+      </div>
       <div class=\"actions\">
-        <a class=\"btn\" href=\"/admin/refresh\">Open refresh JSON</a>
         <a class=\"btn alt\" href=\"/download/history\">Download history CSV</a>
       </div>
     </div>
@@ -1245,7 +1463,8 @@ function refreshNow() {{ window.location.reload(); }}
   </div>
 
   <div class=\"card footer\">
-    <strong>Model notes.</strong> Ball-sum mean in your history: <strong>{html.escape(str(data['sum_mean']))}</strong> | standard deviation: <strong>{html.escape(str(data['sum_std']))}</strong>
+    <strong>Model notes.</strong> Ball-sum mean in your history: <strong>{html.escape(str(data['sum_mean']))}</strong> | standard deviation: <strong>{html.escape(str(data['sum_std']))}</strong><br>
+    <strong>Responsible play:</strong> this dashboard can organise choices and avoid weak patterns, but lottery draws are random. It cannot predict or improve the jackpot odds of any valid line.
   </div>
 
 </div>
