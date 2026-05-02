@@ -1011,11 +1011,14 @@ def statistical_shape_score(balls: Sequence[int], hist_sum_mean: float, hist_sum
 def historical_signal_score(
     balls: Sequence[int],
     stars: Sequence[int],
-    main_rank: pd.DataFrame,
-    star_rank: pd.DataFrame,
+    main_rank: object,
+    star_rank: object,
 ) -> float:
-    main_lookup = main_rank.set_index("number")["score"].to_dict()
-    star_lookup = star_rank.set_index("number")["score"].to_dict()
+    # This function is called thousands of times while building the dashboard.
+    # Avoid rebuilding pandas indexes inside the hot loop; callers may pass
+    # precomputed dict lookups. Keep DataFrame support for compatibility.
+    main_lookup = main_rank if isinstance(main_rank, dict) else main_rank.set_index("number")["score"].to_dict()
+    star_lookup = star_rank if isinstance(star_rank, dict) else star_rank.set_index("number")["score"].to_dict()
     raw = sum(main_lookup.get(int(n), 0.0) for n in balls) + sum(star_lookup.get(int(s), 0.0) for s in stars)
     # History is a weak signal in a fair lottery, so cap its influence.
     return round(min(45.0, raw / 2.6), 3)
@@ -1024,8 +1027,8 @@ def historical_signal_score(
 def ticket_quality_score(
     balls: Sequence[int],
     stars: Sequence[int],
-    main_rank: pd.DataFrame,
-    star_rank: pd.DataFrame,
+    main_rank: object,
+    star_rank: object,
     hist_sum_mean: float,
     hist_sum_std: float,
     mode: str,
@@ -1050,13 +1053,13 @@ def ticket_quality_score(
 def line_score(
     balls: Sequence[int],
     stars: Sequence[int],
-    main_rank: pd.DataFrame,
-    star_rank: pd.DataFrame,
+    main_rank: object,
+    star_rank: object,
     hist_sum_mean: float,
     hist_sum_std: float,
 ) -> float:
-    main_lookup = main_rank.set_index("number")["score"].to_dict()
-    star_lookup = star_rank.set_index("number")["score"].to_dict()
+    main_lookup = main_rank if isinstance(main_rank, dict) else main_rank.set_index("number")["score"].to_dict()
+    star_lookup = star_rank if isinstance(star_rank, dict) else star_rank.set_index("number")["score"].to_dict()
     base = sum(main_lookup.get(n, 0.0) for n in balls) + sum(star_lookup.get(s, 0.0) for s in stars)
 
     total_sum = sum(balls)
@@ -1085,6 +1088,8 @@ def generate_suggested_lines(df: pd.DataFrame, lines_per_mode: int = 4, seed: in
     rng = secrets.SystemRandom()
     main_weights = {row["number"]: float(row["score"]) for _, row in main_rank.iterrows()}
     star_weights = {row["number"]: float(row["score"]) for _, row in star_rank.iterrows()}
+    main_score_lookup = main_rank.set_index("number")["score"].to_dict()
+    star_score_lookup = star_rank.set_index("number")["score"].to_dict()
 
     modes = {
         "value": {"top_main": 50, "top_star": 12, "jitter": 0.80, "history_weight": 0.18},
@@ -1105,11 +1110,11 @@ def generate_suggested_lines(df: pd.DataFrame, lines_per_mode: int = 4, seed: in
         made = 0
 
         candidates: List[Dict[str, object]] = []
+        main_pool = main_rank["number"].tolist()[:cfg["top_main"]]
+        star_pool = star_rank["number"].tolist()[:cfg["top_star"]]
 
         while tries < 4500:
             tries += 1
-            main_pool = main_rank["number"].tolist()[:cfg["top_main"]]
-            star_pool = star_rank["number"].tolist()[:cfg["top_star"]]
 
             if mode in {"value", "coverage"}:
                 mw = [max(0.001, (1.0 + main_weights[n] * cfg["history_weight"]) * (1.0 + rng.uniform(-cfg["jitter"], cfg["jitter"]))) for n in main_pool]
@@ -1139,8 +1144,8 @@ def generate_suggested_lines(df: pd.DataFrame, lines_per_mode: int = 4, seed: in
             score, value_score, shape_score, history_score = ticket_quality_score(
                 balls,
                 stars,
-                main_rank,
-                star_rank,
+                main_score_lookup,
+                star_score_lookup,
                 hist_sum_mean,
                 hist_sum_std,
                 mode,
