@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import random
 import re
+import secrets
 import sys
 import html
 import datetime as dt
@@ -39,6 +41,29 @@ REFRESH_STATE_FILE = BASE_DIR / "euromillions_refresh_state.json"
 
 MAIN_RANGE = list(range(1, 51))
 STAR_RANGE = list(range(1, 13))
+UK_TICKET_COST_GBP = 2.50
+
+# Exact EuroMillions combinatorics: choose 5 from 50 main numbers and 2 from 12 Lucky Stars.
+TOTAL_COMBINATIONS = math.comb(50, 5) * math.comb(12, 2)
+EUROMILLIONS_PRIZE_TIERS = [
+    {"match": "5 + 2", "odds": 139_838_160, "avg_prize_gbp": 61_611_320.84},
+    {"match": "5 + 1", "odds": 6_991_908, "avg_prize_gbp": 268_551.81},
+    {"match": "5", "odds": 3_107_515, "avg_prize_gbp": 25_413.56},
+    {"match": "4 + 2", "odds": 621_503, "avg_prize_gbp": 1_363.07},
+    {"match": "4 + 1", "odds": 31_076, "avg_prize_gbp": 92.88},
+    {"match": "3 + 2", "odds": 14_126, "avg_prize_gbp": 49.05},
+    {"match": "4", "odds": 13_812, "avg_prize_gbp": 30.99},
+    {"match": "2 + 2", "odds": 986, "avg_prize_gbp": 10.66},
+    {"match": "3 + 1", "odds": 707, "avg_prize_gbp": 8.24},
+    {"match": "3", "odds": 314, "avg_prize_gbp": 6.80},
+    {"match": "1 + 2", "odds": 188, "avg_prize_gbp": 5.23},
+    {"match": "2 + 1", "odds": 50, "avg_prize_gbp": 4.15},
+    {"match": "2", "odds": 22, "avg_prize_gbp": 2.72},
+]
+
+
+def gbp(value: float) -> str:
+    return f"£{value:,.2f}"
 
 
 @dataclass
@@ -103,6 +128,22 @@ def save_refresh_state(
     save_json_atomic(REFRESH_STATE_FILE, state)
 
 
+def normalize_draw_numbers(df: pd.DataFrame) -> pd.DataFrame:
+    """Sort main balls and Lucky Stars into canonical order for validation/deduping."""
+    out = df.copy()
+    ball_cols = [f"ball_{i}" for i in range(1, 6)]
+    star_cols = ["lucky_star_1", "lucky_star_2"]
+
+    for idx, row in out.iterrows():
+        balls = sorted(int(row[c]) for c in ball_cols)
+        stars = sorted(int(row[c]) for c in star_cols)
+        for col, value in zip(ball_cols, balls):
+            out.at[idx, col] = value
+        for col, value in zip(star_cols, stars):
+            out.at[idx, col] = value
+    return out
+
+
 def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
     rename_map = {c: c.strip().lower() for c in df.columns}
     df = df.rename(columns=rename_map).copy()
@@ -139,7 +180,8 @@ def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
     for c in num_cols:
         df[c] = pd.to_numeric(df[c], errors="coerce").astype("Int64")
 
-    return df.dropna(subset=["draw_date"] + num_cols).copy()
+    df = df.dropna(subset=["draw_date"] + num_cols).copy()
+    return normalize_draw_numbers(df)
 
 
 def dedupe_history(df: pd.DataFrame) -> pd.DataFrame:
@@ -827,6 +869,184 @@ def weighted_sample_without_replacement(population: Sequence[int], weights: Sequ
     return chosen
 
 
+def prize_tier_ways(main_matches: int, star_matches: int) -> int:
+    return (
+        math.comb(5, main_matches)
+        * math.comb(45, 5 - main_matches)
+        * math.comb(2, star_matches)
+        * math.comb(10, 2 - star_matches)
+    )
+
+
+def exact_any_prize_probability() -> float:
+    winning_match_pairs = [
+        (5, 2), (5, 1), (5, 0), (4, 2), (4, 1), (3, 2), (4, 0),
+        (2, 2), (3, 1), (3, 0), (1, 2), (2, 1), (2, 0),
+    ]
+    return sum(prize_tier_ways(main, stars) for main, stars in winning_match_pairs) / TOTAL_COMBINATIONS
+
+
+def pack_jackpot_probability(line_count: int) -> Dict[str, object]:
+    line_count = max(1, int(line_count))
+    jackpot_p = 1.0 - ((TOTAL_COMBINATIONS - 1) / TOTAL_COMBINATIONS) ** line_count
+    any_prize_single_p = exact_any_prize_probability()
+    any_prize_pack_p = 1.0 - ((1.0 - any_prize_single_p) ** line_count)
+    gross_expected_prize = sum(float(t["avg_prize_gbp"]) / float(t["odds"]) for t in EUROMILLIONS_PRIZE_TIERS) * line_count
+    estimated_cost = UK_TICKET_COST_GBP * line_count
+    return {
+        "lines": line_count,
+        "jackpot_odds_text": f"1 in {TOTAL_COMBINATIONS:,}" if line_count == 1 else f"about 1 in {round(1 / jackpot_p):,}",
+        "jackpot_probability_pct": round(jackpot_p * 100, 9),
+        "any_prize_odds_text": f"about 1 in {round(1 / any_prize_pack_p, 1)} for this pack",
+        "any_prize_probability_pct": round(any_prize_pack_p * 100, 6),
+        "any_prize_single_line_odds_text": f"about 1 in {round(1 / any_prize_single_p, 2)} per line",
+        "estimated_cost_gbp": round(estimated_cost, 2),
+        "estimated_cost_text": gbp(estimated_cost),
+        "gross_expected_prize_gbp": round(gross_expected_prize, 2),
+        "gross_expected_prize_text": gbp(gross_expected_prize),
+        "expected_loss_warning": "Lottery expected value is normally negative after ticket cost; treat play as entertainment, not income.",
+        "truth": "Every valid EuroMillions line has the same jackpot probability; the engine can only improve data quality, diversification, and payout-sharing risk.",
+    }
+
+
+def budget_strategy(line_count: int) -> Dict[str, object]:
+    line_count = max(1, int(line_count))
+    cost = line_count * UK_TICKET_COST_GBP
+    return {
+        "selected_lines": line_count,
+        "cost_per_draw_gbp": round(cost, 2),
+        "cost_per_draw_text": gbp(cost),
+        "monthly_if_two_draws_per_week_gbp": round(cost * 8.7, 2),
+        "monthly_if_two_draws_per_week_text": gbp(cost * 8.7),
+        "best_practice": [
+            "Set a fixed monthly cap before playing.",
+            "Prefer 3-5 diversified lines over chasing many similar lines.",
+            "Never increase spend after losses; each draw is independent.",
+            "If playing with family/friends, write the split agreement before buying.",
+        ],
+    }
+
+
+def line_pack_diversity_report(suggested: pd.DataFrame) -> Dict[str, object]:
+    if suggested.empty:
+        return {"ok": False, "message": "No suggested lines available."}
+
+    parsed = [set(parse_line_numbers(row["balls"])) for _, row in suggested.iterrows()]
+    overlaps = []
+    for i in range(len(parsed)):
+        for j in range(i + 1, len(parsed)):
+            overlaps.append(len(parsed[i] & parsed[j]))
+
+    max_overlap = max(overlaps) if overlaps else 0
+    avg_overlap = round(sum(overlaps) / len(overlaps), 2) if overlaps else 0.0
+    all_numbers = sorted(set().union(*parsed)) if parsed else []
+    return {
+        "ok": max_overlap <= 3,
+        "unique_main_numbers": len(all_numbers),
+        "max_pair_overlap": max_overlap,
+        "average_pair_overlap": avg_overlap,
+        "message": "Good diversification" if max_overlap <= 3 else "Some lines overlap heavily; consider fewer/more diversified lines.",
+    }
+
+
+def parse_line_numbers(text_value: object) -> List[int]:
+    return [int(x) for x in str(text_value).replace(",", " ").split() if str(x).strip()]
+
+
+def popularity_risk_score(balls: Sequence[int], stars: Sequence[int]) -> float:
+    """Estimate how likely a line is to be shared with many human players.
+
+    It does not change draw probability. It favours lines that avoid birthdays,
+    obvious sequences, rows/columns, and very low sums because those are common
+    human choices and can split prizes if they land.
+    """
+    balls = sorted(int(x) for x in balls)
+    stars = sorted(int(x) for x in stars)
+    risk = 0.0
+
+    birthday_count = sum(1 for n in balls if n <= 31)
+    if birthday_count >= 4:
+        risk += 22 + (birthday_count - 4) * 10
+    if max(balls) <= 31:
+        risk += 28
+    if sum(balls) < 95:
+        risk += 18
+    if sum(balls) > 185:
+        risk += 8
+
+    consecutive_pairs = sum(1 for a, b in zip(balls, balls[1:]) if b == a + 1)
+    risk += consecutive_pairs * 13
+
+    gaps = [b - a for a, b in zip(balls, balls[1:])]
+    if len(set(gaps)) == 1:
+        risk += 36
+    if balls in ([1, 2, 3, 4, 5], [5, 10, 15, 20, 25], [10, 20, 30, 40, 50]):
+        risk += 50
+
+    same_decade_max = max(sum(1 for n in balls if lo <= n <= lo + 9) for lo in [1, 11, 21, 31, 41])
+    if same_decade_max >= 4:
+        risk += 16
+
+    if stars == [1, 2]:
+        risk += 22
+    elif all(s <= 6 for s in stars):
+        risk += 8
+
+    return round(min(100.0, risk), 3)
+
+
+def statistical_shape_score(balls: Sequence[int], hist_sum_mean: float, hist_sum_std: float) -> float:
+    balls = sorted(int(x) for x in balls)
+    odd = sum(n % 2 for n in balls)
+    low = sum(n <= 25 for n in balls)
+    total_sum = sum(balls)
+    z = abs((total_sum - hist_sum_mean) / hist_sum_std) if hist_sum_std else 0.0
+    sum_score = max(0.0, 30.0 - (z * 10.0))
+    balance_score = 22.0 - (abs(odd - 2.5) * 4.0) - (abs(low - 2.5) * 4.0)
+    spread = max(balls) - min(balls)
+    spread_score = 18.0 if 24 <= spread <= 45 else 10.0 if spread >= 18 else 3.0
+    return round(max(0.0, sum_score + balance_score + spread_score), 3)
+
+
+def historical_signal_score(
+    balls: Sequence[int],
+    stars: Sequence[int],
+    main_rank: pd.DataFrame,
+    star_rank: pd.DataFrame,
+) -> float:
+    main_lookup = main_rank.set_index("number")["score"].to_dict()
+    star_lookup = star_rank.set_index("number")["score"].to_dict()
+    raw = sum(main_lookup.get(int(n), 0.0) for n in balls) + sum(star_lookup.get(int(s), 0.0) for s in stars)
+    # History is a weak signal in a fair lottery, so cap its influence.
+    return round(min(45.0, raw / 2.6), 3)
+
+
+def ticket_quality_score(
+    balls: Sequence[int],
+    stars: Sequence[int],
+    main_rank: pd.DataFrame,
+    star_rank: pd.DataFrame,
+    hist_sum_mean: float,
+    hist_sum_std: float,
+    mode: str,
+) -> Tuple[float, float, float, float]:
+    shape = statistical_shape_score(balls, hist_sum_mean, hist_sum_std)
+    history = historical_signal_score(balls, stars, main_rank, star_rank)
+    popularity_risk = popularity_risk_score(balls, stars)
+    value_score = max(0.0, 100.0 - popularity_risk)
+
+    if mode == "value":
+        total = (shape * 0.42) + (value_score * 0.48) + (history * 0.10)
+    elif mode == "balanced":
+        total = (shape * 0.45) + (value_score * 0.30) + (history * 0.25)
+    elif mode == "anti_last_draw":
+        total = (shape * 0.50) + (value_score * 0.38) + (history * 0.12)
+    else:  # coverage/random-professional line
+        total = (shape * 0.55) + (value_score * 0.35) + (history * 0.10)
+
+    return round(total, 3), round(value_score, 3), round(shape, 3), round(history, 3)
+
+
 def line_score(
     balls: Sequence[int],
     stars: Sequence[int],
@@ -860,15 +1080,17 @@ def generate_suggested_lines(df: pd.DataFrame, lines_per_mode: int = 4, seed: in
     hist_sum_mean = float(df["sum_balls"].mean())
     hist_sum_std = float(df["sum_balls"].std(ddof=0) or 1.0)
 
-    rng = random.Random(seed)
+    # Use real entropy by default.  A fixed seed made the app repeat the same
+    # lines forever, which looks clever but is not a good lottery workflow.
+    rng = secrets.SystemRandom()
     main_weights = {row["number"]: float(row["score"]) for _, row in main_rank.iterrows()}
     star_weights = {row["number"]: float(row["score"]) for _, row in star_rank.iterrows()}
 
     modes = {
-        "safe": {"top_main": 18, "top_star": 8, "jitter": 0.08},
-        "balanced": {"top_main": 28, "top_star": 10, "jitter": 0.18},
-        "aggressive": {"top_main": 40, "top_star": 12, "jitter": 0.33},
-        "anti_last_draw": {"top_main": 32, "top_star": 12, "jitter": 0.20},
+        "value": {"top_main": 50, "top_star": 12, "jitter": 0.80, "history_weight": 0.18},
+        "balanced": {"top_main": 50, "top_star": 12, "jitter": 0.45, "history_weight": 0.45},
+        "coverage": {"top_main": 50, "top_star": 12, "jitter": 1.00, "history_weight": 0.05},
+        "anti_last_draw": {"top_main": 50, "top_star": 12, "jitter": 0.55, "history_weight": 0.20},
     }
 
     last_row = df.iloc[-1]
@@ -882,13 +1104,19 @@ def generate_suggested_lines(df: pd.DataFrame, lines_per_mode: int = 4, seed: in
         tries = 0
         made = 0
 
-        while made < lines_per_mode and tries < 1500:
+        candidates: List[Dict[str, object]] = []
+
+        while tries < 4500:
             tries += 1
             main_pool = main_rank["number"].tolist()[:cfg["top_main"]]
             star_pool = star_rank["number"].tolist()[:cfg["top_star"]]
 
-            mw = [max(0.001, main_weights[n] * (1.0 + rng.uniform(-cfg["jitter"], cfg["jitter"]))) for n in main_pool]
-            sw = [max(0.001, star_weights[s] * (1.0 + rng.uniform(-cfg["jitter"], cfg["jitter"]))) for s in star_pool]
+            if mode in {"value", "coverage"}:
+                mw = [max(0.001, (1.0 + main_weights[n] * cfg["history_weight"]) * (1.0 + rng.uniform(-cfg["jitter"], cfg["jitter"]))) for n in main_pool]
+                sw = [max(0.001, (1.0 + star_weights[s] * cfg["history_weight"]) * (1.0 + rng.uniform(-cfg["jitter"], cfg["jitter"]))) for s in star_pool]
+            else:
+                mw = [max(0.001, main_weights[n] * (1.0 + rng.uniform(-cfg["jitter"], cfg["jitter"]))) for n in main_pool]
+                sw = [max(0.001, star_weights[s] * (1.0 + rng.uniform(-cfg["jitter"], cfg["jitter"]))) for s in star_pool]
 
             balls = sorted(weighted_sample_without_replacement(main_pool, mw, 5, rng))
             stars = sorted(weighted_sample_without_replacement(star_pool, sw, 2, rng))
@@ -908,16 +1136,17 @@ def generate_suggested_lines(df: pd.DataFrame, lines_per_mode: int = 4, seed: in
             if key in used:
                 continue
 
-            score = line_score(
+            score, value_score, shape_score, history_score = ticket_quality_score(
                 balls,
                 stars,
                 main_rank,
                 star_rank,
                 hist_sum_mean,
                 hist_sum_std,
+                mode,
             )
 
-            rows.append({
+            candidates.append({
                 "mode": mode,
                 "balls": " ".join(f"{x:02d}" for x in balls),
                 "stars": " ".join(f"{x:02d}" for x in stars),
@@ -925,13 +1154,22 @@ def generate_suggested_lines(df: pd.DataFrame, lines_per_mode: int = 4, seed: in
                 "odd_even": f"{odd}-{5 - odd}",
                 "low_high": f"{low}-{5 - low}",
                 "score": score,
+                "value_score": value_score,
+                "shape_score": shape_score,
+                "history_signal": history_score,
+                "popularity_risk": popularity_risk_score(balls, stars),
             })
             used.add(key)
+
+        for candidate in sorted(candidates, key=lambda x: float(x["score"]), reverse=True):
+            rows.append(candidate)
             made += 1
+            if made >= lines_per_mode:
+                break
 
     out = pd.DataFrame(rows).sort_values(["mode", "score"], ascending=[True, False]).reset_index(drop=True)
     mode_order = pd.CategoricalDtype(
-        categories=["safe", "balanced", "aggressive", "anti_last_draw"],
+        categories=["value", "balanced", "coverage", "anti_last_draw"],
         ordered=True
     )
     out["mode"] = out["mode"].astype(mode_order)
@@ -944,7 +1182,7 @@ def generate_premium_line_pack(df: pd.DataFrame, total_lines: int = 5) -> pd.Dat
     hist = enrich_history(df)
     base = generate_suggested_lines(hist, lines_per_mode=max(3, total_lines), seed=42)
 
-    target_order = ["balanced", "safe", "anti_last_draw", "aggressive"]
+    target_order = ["value", "balanced", "coverage", "anti_last_draw"]
     selected_rows: List[Dict[str, object]] = []
     used_balls_sets = []
 
@@ -955,7 +1193,7 @@ def generate_premium_line_pack(df: pd.DataFrame, total_lines: int = 5) -> pd.Dat
             similarity_ok = True
             for prev in used_balls_sets:
                 overlap = len(set(balls_tuple) & set(prev))
-                if overlap >= 4:
+                if overlap >= 3:
                     similarity_ok = False
                     break
             if not similarity_ok:
@@ -974,23 +1212,30 @@ def choose_best_line(suggested: pd.DataFrame) -> Tuple[Dict[str, object], BestLi
     if suggested.empty:
         raise ValueError("No suggested lines generated.")
 
+    value = suggested[suggested["mode"] == "value"].sort_values("score", ascending=False)
     balanced = suggested[suggested["mode"] == "balanced"].sort_values("score", ascending=False)
-    safe = suggested[suggested["mode"] == "safe"].sort_values("score", ascending=False)
+    coverage = suggested[suggested["mode"] == "coverage"].sort_values("score", ascending=False)
     anti = suggested[suggested["mode"] == "anti_last_draw"].sort_values("score", ascending=False)
-    aggressive = suggested[suggested["mode"] == "aggressive"].sort_values("score", ascending=False)
+
+    if not value.empty:
+        row = value.iloc[0].to_dict()
+        return row, BestLineDecision(
+            mode="value",
+            reason="Chosen as the best realistic-value line: normal statistical shape, diversified numbers, and lower risk of sharing a prize with common human picks.",
+        )
 
     if not balanced.empty:
         row = balanced.iloc[0].to_dict()
         return row, BestLineDecision(
             mode="balanced",
-            reason="Chosen because balanced lines usually give the best mix of strong numbers, realistic spread, and stable pattern profile.",
+            reason="Chosen because balanced lines mix data signals, realistic spread, and lower popularity risk without pretending to predict randomness.",
         )
 
-    if not safe.empty:
-        row = safe.iloc[0].to_dict()
+    if not coverage.empty:
+        row = coverage.iloc[0].to_dict()
         return row, BestLineDecision(
-            mode="safe",
-            reason="Chosen because no balanced line was available, so the model took the strongest conservative line.",
+            mode="coverage",
+            reason="Chosen because no value/balanced line was available, so the model selected a broad-coverage line.",
         )
 
     if not anti.empty:
@@ -1000,9 +1245,9 @@ def choose_best_line(suggested: pd.DataFrame) -> Tuple[Dict[str, object], BestLi
             reason="Chosen to reduce overlap with the most recent draw while keeping a strong score.",
         )
 
-    row = aggressive.iloc[0].to_dict()
+    row = suggested.sort_values("score", ascending=False).iloc[0].to_dict()
     return row, BestLineDecision(
-        mode="aggressive",
+        mode=str(row.get("mode", "fallback")),
         reason="Chosen as fallback from the highest available score.",
     )
 
@@ -1050,6 +1295,11 @@ def build_dashboard_data(df: pd.DataFrame, premium_line_count: int = 5) -> Dict[
     overdue_chart = simple_bar_chart_html(overdue, "number", "draws_since_seen", "Overdue numbers")
     top_pairs_chart = simple_bar_chart_html(top_pairs, "pair", "count", "Top pairs")
     quality = history_quality_report(hist)
+    odds = pack_jackpot_probability(premium_line_count)
+    odds["total_combinations"] = f"{TOTAL_COMBINATIONS:,}"
+    odds["tiers"] = EUROMILLIONS_PRIZE_TIERS
+    strategy = budget_strategy(premium_line_count)
+    diversity = line_pack_diversity_report(suggested)
 
     return {
         "history_rows": len(hist),
@@ -1074,6 +1324,9 @@ def build_dashboard_data(df: pd.DataFrame, premium_line_count: int = 5) -> Dict[
         "top_pairs_chart": top_pairs_chart,
         "premium_line_count": premium_line_count,
         "quality": quality,
+        "odds": odds,
+        "strategy": strategy,
+        "diversity": diversity,
     }
 
 
@@ -1088,15 +1341,15 @@ def render_table(rows: List[Dict[str, object]], columns: Sequence[Tuple[str, str
 
 def mode_chip(mode: str) -> str:
     classes = {
-        "safe": "safe",
+        "value": "safe",
         "balanced": "balanced",
-        "aggressive": "aggressive",
+        "coverage": "aggressive",
         "anti_last_draw": "anti",
     }
     labels = {
-        "safe": "SAFE",
+        "value": "VALUE",
         "balanced": "BALANCED",
-        "aggressive": "AGGRESSIVE",
+        "coverage": "COVERAGE",
         "anti_last_draw": "ANTI LAST DRAW",
     }
     cls = classes.get(mode, "balanced")
@@ -1109,6 +1362,9 @@ def render_dashboard(data: Dict[str, object], refresh: RefreshResult) -> str:
     best = data["best_line"]
     state = data.get("refresh_state", {})
     quality = data.get("quality", {})
+    odds = data.get("odds", {})
+    strategy = data.get("strategy", {})
+    diversity = data.get("diversity", {})
     quality_notes = quality.get("notes", []) if isinstance(quality, dict) else []
     quality_class = "ok" if isinstance(quality, dict) and quality.get("ok") else "warn"
     quality_title = "DATA QUALITY OK" if quality_class == "ok" else "DATA QUALITY WARNING"
@@ -1131,8 +1387,13 @@ def render_dashboard(data: Dict[str, object], refresh: RefreshResult) -> str:
     )
     suggested_table = render_table(
         data["suggested"],
-        [("mode", "Mode"), ("balls", "Main numbers"), ("stars", "Stars"), ("sum_balls", "Sum"), ("odd_even", "Odd-Even"), ("low_high", "Low-High"), ("score", "Score")],
+        [("mode", "Mode"), ("balls", "Main numbers"), ("stars", "Stars"), ("sum_balls", "Sum"), ("odd_even", "Odd-Even"), ("low_high", "Low-High"), ("score", "Score"), ("value_score", "Value"), ("popularity_risk", "Share risk")],
     )
+    odds_table = render_table(
+        odds.get("tiers", [])[:8] if isinstance(odds, dict) else [],
+        [("match", "Match"), ("odds", "Odds 1 in"), ("avg_prize_gbp", "Avg prize £")],
+    )
+    strategy_items = "".join(f"<li>{html.escape(str(item))}</li>" for item in strategy.get("best_practice", [])) if isinstance(strategy, dict) else ""
 
     refresh_text = f"{refresh.message} Added {refresh.draws_added} new draw(s)." if refresh.ok else refresh.message
     generated = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1382,9 +1643,9 @@ function refreshNow() {{ window.location.reload(); }}
       </div>
       <div class=\"best-meta\">
         <div class=\"box\"><div class=\"tiny\">Score</div><div class=\"v\">{html.escape(str(best['score']))}</div></div>
+        <div class=\"box\"><div class=\"tiny\">Value</div><div class=\"v\">{html.escape(str(best.get('value_score', '-')))}</div></div>
+        <div class=\"box\"><div class=\"tiny\">Share risk</div><div class=\"v\">{html.escape(str(best.get('popularity_risk', '-')))}</div></div>
         <div class=\"box\"><div class=\"tiny\">Sum</div><div class=\"v\">{html.escape(str(best['sum_balls']))}</div></div>
-        <div class=\"box\"><div class=\"tiny\">Odd-Even</div><div class=\"v\">{html.escape(str(best['odd_even']))}</div></div>
-        <div class=\"box\"><div class=\"tiny\">Low-High</div><div class=\"v\">{html.escape(str(best['low_high']))}</div></div>
       </div>
       <p class=\"small-note\" style=\"margin-top:14px;\">{html.escape(str(data['best_line_reason']))}</p>
     </div>
@@ -1422,8 +1683,20 @@ function refreshNow() {{ window.location.reload(); }}
       <div class=\"section-title\">What to play</div>
       <p class=\"small-note\"><strong>Fast rule:</strong> use the big line in <strong>Best line for next draw</strong>.</p>
       <p class=\"small-note\"><strong>Line pack:</strong> 1, 3, 5 or 10 diversified lines using the selector buttons.</p>
-      <p class=\"small-note\"><strong>Avoid:</strong> copying the latest official draw into your next play.</p>
+      <p class=\"small-note\"><strong>Best realistic edge:</strong> buy only what you can afford, use more independent lines if your budget allows, and avoid common human patterns so a prize is less likely to be shared.</p>
+      <p class=\"small-note\"><strong>Current pack odds:</strong> jackpot {html.escape(str(odds.get('jackpot_odds_text', '1 in 139,838,160')))}; any prize {html.escape(str(odds.get('any_prize_odds_text', 'about 1 in 13 per line')))}.</p>
+      <p class=\"small-note\"><strong>Cost:</strong> {html.escape(str(strategy.get('cost_per_draw_text', '£0.00')))} per draw; approx {html.escape(str(strategy.get('monthly_if_two_draws_per_week_text', '£0.00')))} / month if playing Tue+Fri.</p>
+      <p class=\"small-note\"><strong>Diversity:</strong> {html.escape(str(diversity.get('message', '-')))} · unique main numbers {html.escape(str(diversity.get('unique_main_numbers', '-')))} · max overlap {html.escape(str(diversity.get('max_pair_overlap', '-')))}.</p>
     </div>
+  </div>
+
+  <div class=\"card\" style=\"margin-top:18px;\">
+    <div class=\"section-title\">Probability truth engine</div>
+    <p class=\"small-note\"><strong>Total valid combinations:</strong> {html.escape(str(odds.get('total_combinations', '139,838,160')))}. {html.escape(str(odds.get('truth', 'Every valid line has the same jackpot chance.')))}</p>
+    <p class=\"small-note\"><strong>What this app optimises:</strong> clean live data, diversified line packs, statistically normal shapes, and lower shared-prize risk — not magic prediction.</p>
+    <p class=\"small-note\"><strong>Expected value check:</strong> estimated ticket cost {html.escape(str(odds.get('estimated_cost_text', '-')))}; gross expected prize before cost {html.escape(str(odds.get('gross_expected_prize_text', '-')))}. {html.escape(str(odds.get('expected_loss_warning', '')))}</p>
+    <ul class=\"small-note\">{strategy_items}</ul>
+    {odds_table}
   </div>
 
   <div class=\"card\" style=\"margin-top:18px;\">

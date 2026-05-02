@@ -17,4 +17,6 @@ NOTES:
 - /euromillions refreshes from public sources when the dashboard loads.
 - The Render cron job also refreshes history using refresh_job.py.
 - /admin/refresh is now locked unless ADMIN_REFRESH_TOKEN is configured and supplied via ?token=... or X-Admin-Token.
-- The model is for analytics/organisation only. It cannot predict random lottery results or improve jackpot odds.
+- The engine now includes exact EuroMillions combinatorics, prize-tier odds, pack odds, value scoring, lower shared-prize-risk scoring, and diversified line generation.
+- JSON endpoints: /api/odds?lines=5 and /api/suggested?lines=5.
+- Important truth: every valid line has the same jackpot odds. The model cannot predict random lottery results; it improves data quality, line diversification, budget clarity, and avoids common human patterns that may split prizes.

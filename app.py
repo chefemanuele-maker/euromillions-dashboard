@@ -150,6 +150,40 @@ def download_suggested():
         return jsonify({"ok": False, "error": traceback.format_exc()}), 500
 
 
+@app.route("/api/odds")
+def api_odds():
+    lines_count = request.args.get("lines", default=5, type=int)
+    if lines_count not in [1, 3, 5, 10]:
+        lines_count = 5
+    return jsonify({
+        "odds": euro.pack_jackpot_probability(lines_count),
+        "strategy": euro.budget_strategy(lines_count),
+    })
+
+
+@app.route("/api/suggested")
+def api_suggested():
+    try:
+        lines_count = request.args.get("lines", default=5, type=int)
+        if lines_count not in [1, 3, 5, 10]:
+            lines_count = 5
+        df, refresh = euro.refresh_history()
+        data = euro.build_dashboard_data(df, premium_line_count=lines_count)
+        return jsonify({
+            "ok": True,
+            "refresh": refresh.__dict__,
+            "odds": data["odds"],
+            "best_line": data["best_line"],
+            "best_line_reason": data["best_line_reason"],
+            "suggested": data["suggested"],
+            "quality": data["quality"],
+            "strategy": data["strategy"],
+            "diversity": data["diversity"],
+        })
+    except Exception:
+        return jsonify({"ok": False, "error": traceback.format_exc()}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
