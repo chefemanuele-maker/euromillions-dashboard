@@ -10,7 +10,6 @@ import re
 import secrets
 import sys
 import html
-import traceback
 import datetime as dt
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
@@ -1885,7 +1884,7 @@ try:
         except Exception:
             logger.exception("Legacy Render entrypoint failed")
             return Response(
-                "<pre>" + html.escape(traceback.format_exc()) + "</pre>",
+                "<h1>EuroMillions error</h1><p>The dashboard could not load cached data.</p>",
                 status=500,
                 mimetype="text/html",
             )
@@ -1906,6 +1905,7 @@ try:
                 "suggested": data.get("suggested"),
             })
         except Exception:
-            return jsonify({"ok": False, "error": traceback.format_exc()}), 500
+            logger.exception("Legacy Render API failed")
+            return jsonify({"ok": False, "error": "dashboard_unavailable"}), 500
 except Exception:
     app = None
