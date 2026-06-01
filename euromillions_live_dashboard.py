@@ -10,6 +10,7 @@ import re
 import secrets
 import sys
 import html
+import traceback
 import datetime as dt
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
@@ -1873,27 +1874,38 @@ try:
 
     @app.route("/euromillions")
     def flask_euromillions():
-        lines_count = request.args.get("lines", default=5, type=int)
-        if lines_count not in [1, 3, 5, 10]:
-            lines_count = 5
-        payload = build_dashboard_payload(premium_line_count=lines_count)
-        refresh = refresh_from_dict(payload["refresh"])
-        page = render_dashboard(payload["data"], refresh)
-        return Response(page, mimetype="text/html")
+        try:
+            lines_count = request.args.get("lines", default=5, type=int)
+            if lines_count not in [1, 3, 5, 10]:
+                lines_count = 5
+            payload = build_dashboard_payload(premium_line_count=lines_count)
+            refresh = refresh_from_dict(payload["refresh"])
+            page = render_dashboard(payload["data"], refresh)
+            return Response(page, mimetype="text/html")
+        except Exception:
+            logger.exception("Legacy Render entrypoint failed")
+            return Response(
+                "<pre>" + html.escape(traceback.format_exc()) + "</pre>",
+                status=500,
+                mimetype="text/html",
+            )
 
     @app.route("/api/suggested")
     def flask_api_suggested():
-        lines_count = request.args.get("lines", default=5, type=int)
-        if lines_count not in [1, 3, 5, 10]:
-            lines_count = 5
-        payload = build_dashboard_payload(premium_line_count=lines_count)
-        data = payload["data"]
-        return jsonify({
-            "ok": True,
-            "refresh": payload["refresh"],
-            "quality": data.get("quality"),
-            "best_line": data.get("best_line"),
-            "suggested": data.get("suggested"),
-        })
+        try:
+            lines_count = request.args.get("lines", default=5, type=int)
+            if lines_count not in [1, 3, 5, 10]:
+                lines_count = 5
+            payload = build_dashboard_payload(premium_line_count=lines_count)
+            data = payload["data"]
+            return jsonify({
+                "ok": True,
+                "refresh": payload["refresh"],
+                "quality": data.get("quality"),
+                "best_line": data.get("best_line"),
+                "suggested": data.get("suggested"),
+            })
+        except Exception:
+            return jsonify({"ok": False, "error": traceback.format_exc()}), 500
 except Exception:
     app = None
