@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import random
 import re
 import secrets
@@ -11,7 +12,7 @@ import sys
 import html
 import datetime as dt
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from itertools import combinations
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 OFFICIAL_XML_URL = "https://www.national-lottery.co.uk/results/euromillions/draw-history/xml"
 OFFICIAL_RESULTS_URL = "https://www.national-lottery.co.uk/results/euromillions"
+BACKFILL_RESULTS_URL = "https://www.national-lottery.com/euromillions/results/{slug}"
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -38,6 +40,9 @@ BASE_DIR = Path.home() / "Data" / "Euro"
 LOCAL_HISTORY = BASE_DIR / "euromillions_history_live.csv"
 USER_ORIGINAL = BASE_DIR / "euromillions_export_2026-03-16.csv"
 REFRESH_STATE_FILE = BASE_DIR / "euromillions_refresh_state.json"
+DASHBOARD_CACHE = BASE_DIR / "euromillions_dashboard_payload.json"
+BACKFILL_FETCH_TIMEOUT = int(os.environ.get("EUROMILLIONS_BACKFILL_TIMEOUT", "6"))
+BACKFILL_MAX_DRAWS = int(os.environ.get("EUROMILLIONS_BACKFILL_MAX_DRAWS", "60"))
 
 MAIN_RANGE = list(range(1, 51))
 STAR_RANGE = list(range(1, 13))
@@ -526,94 +531,110 @@ def fetch_official_html_backup(timeout: int = 20) -> pd.DataFrame:
 
 
 
-def fetch_lottery_archive_year(year: int, timeout: int = 20) -> pd.DataFrame:
-    """Fetch one public archive year from lottery.co.uk.
-
-    The National Lottery XML currently exposes only the latest draw, so this
-    archive source is used to fill recent gaps in the local CSV. We keep it as
-    a secondary source and still let the official XML overwrite/confirm the
-    latest draw when both are available.
-    """
-    url = f"https://www.lottery.co.uk/euromillions/results/archive-{year}"
-    headers = {"User-Agent": USER_AGENT, "Accept": "text/html,*/*"}
-    logger.info("Fetching lottery.co.uk archive: %s", url)
-    resp = requests.get(url, headers=headers, timeout=timeout)
-    logger.info("lottery.co.uk archive response status: %s", resp.status_code)
-    resp.raise_for_status()
-    text = resp.text
-
-    # Each row contains a link like /euromillions/results-28-04-2026 followed by
-    # 5 main balls, 2 lucky stars, a Millionaire Maker/code text, and jackpot.
-    pattern = re.compile(
-        r'href=["\']/euromillions/results-(\d{2})-(\d{2})-(\d{4})["\'][^>]*>.*?</a>(.*?)'
-        r'(?=href=["\']/euromillions/results-\d{2}-\d{2}-\d{4}["\']|EuroMillions Results Archive Years|</body>)',
-        flags=re.IGNORECASE | re.DOTALL,
+def backfill_slug(draw_date: dt.date) -> str:
+    return (
+        f"{draw_date.strftime('%A').lower()}-"
+        f"{draw_date.day:02d}-"
+        f"{draw_date.strftime('%B').lower()}-"
+        f"{draw_date.year}"
     )
 
+
+def parse_backfill_html(draw_date: dt.date, text: str) -> Dict[str, object]:
+    match = re.search(r'<ul class="balls" id="ballsCell">(.*?)</ul>', text, flags=re.S | re.I)
+    if not match:
+        raise ValueError(f"No backfill ball list found for {draw_date}.")
+
+    balls_block = match.group(1)
+    balls = [
+        int(v)
+        for v in re.findall(
+            r'<li[^>]*class="[^"]*\beuromillions\b[^"]*\bball\b[^"]*\bball\b[^"]*"[^>]*>\s*(\d{1,2})\s*</li>',
+            balls_block,
+            flags=re.I,
+        )
+    ]
+    stars = [
+        int(v)
+        for v in re.findall(
+            r'<li[^>]*class="[^"]*\blucky-star\b[^"]*"[^>]*>\s*(\d{1,2})\s*</li>',
+            balls_block,
+            flags=re.I,
+        )
+    ]
+    if len(balls) != 5 or len(stars) != 2:
+        raise ValueError(f"Incomplete backfill draw parsed for {draw_date}.")
+
+    def clean_text(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return html.unescape(re.sub(r"\s+", " ", value)).strip()
+
+    draw_number = None
+    draw_match = re.search(r"Draw Number:\s*<br>\s*<strong>([^<]+)</strong>", text, flags=re.S | re.I)
+    if draw_match:
+        draw_number = re.sub(r"\D", "", draw_match.group(1)) or None
+
+    jackpot = None
+    jackpot_match = re.search(r'Jackpot for this draw:\s*<span[^>]*>([^<]+)</span>', text, flags=re.S | re.I)
+    if jackpot_match:
+        jackpot = clean_text(jackpot_match.group(1))
+
+    raffle = None
+    raffle_match = re.search(r'<span class="raffleCode larger">([^<]+)</span>', text, flags=re.S | re.I)
+    if raffle_match:
+        raffle = clean_text(raffle_match.group(1))
+
+    row: Dict[str, object] = {
+        "source": "national_lottery_com_backfill",
+        "draw_date": draw_date.isoformat(),
+        "draw_number": draw_number,
+        "jackpot": jackpot,
+        "uk_millionaire_maker": raffle,
+        "ball_1": balls[0],
+        "ball_2": balls[1],
+        "ball_3": balls[2],
+        "ball_4": balls[3],
+        "ball_5": balls[4],
+        "lucky_star_1": stars[0],
+        "lucky_star_2": stars[1],
+    }
+    if not validate_draw_row(row):
+        raise ValueError(f"Invalid backfill draw parsed for {draw_date}.")
+    return row
+
+
+def fetch_backfill_draw(draw_date: dt.date, timeout: int = BACKFILL_FETCH_TIMEOUT) -> Dict[str, object]:
+    url = BACKFILL_RESULTS_URL.format(slug=backfill_slug(draw_date))
+    logger.info("Fetching National Lottery backfill draw: %s", url)
+    resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
+    logger.info("Backfill response status for %s: %s", draw_date, resp.status_code)
+    resp.raise_for_status()
+    return parse_backfill_html(draw_date, resp.text)
+
+
+def fetch_missing_backfill(df: pd.DataFrame, latest_date: dt.date) -> Tuple[pd.DataFrame, int, List[str]]:
+    if df.empty:
+        return pd.DataFrame(), 0, []
+
+    existing = set(pd.to_datetime(df["draw_date"], errors="coerce").dt.date.dropna())
+    start_date = max(min(existing), latest_date - dt.timedelta(days=180))
+    missing = [d for d in expected_draw_dates(start_date, latest_date) if d not in existing]
+    if not missing:
+        return pd.DataFrame(), 0, []
+
     rows: List[Dict[str, object]] = []
-    for match in pattern.finditer(text):
-        day, month, row_year, chunk = match.groups()
-        draw_date = f"{row_year}-{month}-{day}"
-        visible = re.sub(r"<[^>]+>", " ", chunk)
-        visible = html.unescape(re.sub(r"\s+", " ", visible)).strip()
-        nums = [int(x) for x in re.findall(r"\b\d{1,2}\b", visible)]
-        if len(nums) < 7:
-            logger.warning("Skipping archive row with too few numbers | date=%s | text=%s", draw_date, visible[:160])
-            continue
-
-        balls = sorted(nums[:5])
-        stars = sorted(nums[5:7])
-        jackpot_match = re.search(r"£\s*([0-9,.]+)", visible)
-        code_match = re.search(r"\b[A-Z]{4}\d{5}\b", visible)
-
-        row: Dict[str, object] = {
-            "draw_date": draw_date,
-            "ball_1": balls[0],
-            "ball_2": balls[1],
-            "ball_3": balls[2],
-            "ball_4": balls[3],
-            "ball_5": balls[4],
-            "lucky_star_1": stars[0],
-            "lucky_star_2": stars[1],
-            "uk_millionaire_maker": code_match.group(0) if code_match else pd.NA,
-            "jackpot": jackpot_match.group(1) if jackpot_match else pd.NA,
-            "source": "lottery_archive",
-        }
-        if validate_draw_row(row):
-            rows.append(row)
-        else:
-            logger.warning("Skipping archive row: failed validation | row=%s", row)
+    errors: List[str] = []
+    for draw_date in missing[:BACKFILL_MAX_DRAWS]:
+        try:
+            rows.append(fetch_backfill_draw(draw_date))
+        except Exception as exc:
+            logger.warning("Backfill skipped for %s | reason=%s", draw_date, exc)
+            errors.append(f"{draw_date}: {exc}")
 
     if not rows:
-        raise ValueError(f"No draw rows parsed from lottery.co.uk archive {year}.")
-
-    parsed = standardize_columns(pd.DataFrame(rows))
-    logger.info("Parsed lottery.co.uk archive | year=%s | rows=%s | latest=%s", year, len(parsed), parsed["draw_date"].max())
-    return parsed
-
-
-def fetch_recent_archive_history(df: pd.DataFrame) -> pd.DataFrame:
-    """Fetch current/recent archive years to fill gaps after the bundled CSV."""
-    today_year = dt.date.today().year
-    years = {today_year}
-    if not df.empty:
-        latest = pd.to_datetime(df["draw_date"], errors="coerce").max()
-        if not pd.isna(latest):
-            years.add(int(latest.year))
-            # If the local CSV stops near year-end, include the next year too.
-            if int(latest.year) < today_year:
-                years.add(int(latest.year) + 1)
-
-    frames: List[pd.DataFrame] = []
-    for year in sorted(y for y in years if 2004 <= y <= today_year):
-        try:
-            frames.append(fetch_lottery_archive_year(year))
-        except Exception as exc:
-            logger.warning("Archive fetch skipped for year=%s | reason=%s", year, exc)
-
-    if not frames:
-        return pd.DataFrame()
-    return standardize_columns(pd.concat(frames, ignore_index=True))
+        return pd.DataFrame(), 0, errors
+    return standardize_columns(pd.DataFrame(rows)), len(rows), errors
 
 
 def expected_draw_dates(start: dt.date, end: dt.date) -> List[dt.date]:
@@ -668,20 +689,22 @@ def refresh_history() -> Tuple[pd.DataFrame, RefreshResult]:
     before = len(df)
     sources: List[str] = []
     warnings: List[str] = []
-
-    try:
-        archive = fetch_recent_archive_history(df)
-        if not archive.empty:
-            df = dedupe_history(pd.concat([df, archive], ignore_index=True))
-            sources.append("lottery_archive")
-    except Exception as archive_exc:
-        logger.exception("Recent archive refresh failed")
-        warnings.append(f"Archive refresh failed: {archive_exc}")
+    backfilled = 0
 
     try:
         official = fetch_official_xml()
         if official.empty:
             raise ValueError("Official XML returned no valid draws.")
+        latest_official = pd.to_datetime(official["draw_date"], errors="coerce").dt.date.max()
+        if latest_official:
+            backfill_df, backfilled, backfill_errors = fetch_missing_backfill(df, latest_official)
+            if not backfill_df.empty:
+                df = dedupe_history(pd.concat([df, backfill_df], ignore_index=True))
+                sources.append("national_lottery_com_backfill")
+            if backfill_errors and not backfilled:
+                warnings.append(
+                    "Official XML currently exposes only the latest draw; historical backfill was unavailable."
+                )
         df = dedupe_history(pd.concat([df, official], ignore_index=True))
         sources.append("official_xml")
     except Exception as xml_exc:
@@ -707,9 +730,11 @@ def refresh_history() -> Tuple[pd.DataFrame, RefreshResult]:
     if sources:
         source = "+".join(sources)
         message = "Refresh complete."
+        if backfilled:
+            message += f" Backfilled {backfilled} missing draw(s) between local cache and latest official XML draw."
     else:
         source = "local_cache"
-        message = "Official/archive sources unavailable. Using local cache."
+        message = "Official sources unavailable. Using local cache."
 
     if warnings:
         message += " Warnings: " + " | ".join(warnings[:2])
@@ -731,6 +756,59 @@ def refresh_history() -> Tuple[pd.DataFrame, RefreshResult]:
         latest_date=result.latest_date,
     )
     return df, result
+
+
+def refresh_to_dict(refresh: RefreshResult) -> Dict[str, object]:
+    return asdict(refresh)
+
+
+def refresh_from_dict(raw: Dict[str, object]) -> RefreshResult:
+    return RefreshResult(
+        source=str(raw.get("source", "local_cache")),
+        ok=bool(raw.get("ok", False)),
+        message=str(raw.get("message", "Loaded cached dashboard data.")),
+        draws_added=int(raw.get("draws_added", 0) or 0),
+        latest_date=raw.get("latest_date") if raw.get("latest_date") is not None else None,
+    )
+
+
+def local_refresh_result(df: pd.DataFrame, message: str = "Loaded local EuroMillions history without online refresh.") -> RefreshResult:
+    latest = str(df["draw_date"].max()) if not df.empty and "draw_date" in df.columns else None
+    return RefreshResult(
+        source="local_cache",
+        ok=True,
+        message=message,
+        draws_added=0,
+        latest_date=latest,
+    )
+
+
+def save_dashboard_cache(data: Dict[str, object], refresh: RefreshResult, premium_line_count: int = 5) -> None:
+    ensure_base_dir()
+    payload: Dict[str, object] = {
+        "generated_at": dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "premium_line_count": int(premium_line_count),
+        "data": data,
+        "refresh": refresh_to_dict(refresh),
+    }
+    save_json_atomic(DASHBOARD_CACHE, payload)
+
+
+def load_dashboard_cache(premium_line_count: int = 5) -> Optional[Tuple[Dict[str, object], RefreshResult]]:
+    if not DASHBOARD_CACHE.exists():
+        return None
+    try:
+        payload = json.loads(DASHBOARD_CACHE.read_text(encoding="utf-8"))
+        data = payload.get("data")
+        refresh = payload.get("refresh")
+        cached_lines = int(payload.get("premium_line_count", premium_line_count) or premium_line_count)
+        if cached_lines != int(premium_line_count):
+            return None
+        if not isinstance(data, dict) or not isinstance(refresh, dict):
+            return None
+        return data, refresh_from_dict(refresh)
+    except Exception:
+        return None
 
 
 def enrich_history(df: pd.DataFrame) -> pd.DataFrame:
@@ -1333,6 +1411,30 @@ def build_dashboard_data(df: pd.DataFrame, premium_line_count: int = 5) -> Dict[
         "strategy": strategy,
         "diversity": diversity,
     }
+
+
+def build_and_store_dashboard_cache(premium_line_count: int = 5) -> Tuple[Dict[str, object], RefreshResult]:
+    df, refresh = refresh_history()
+    data = build_dashboard_data(df, premium_line_count=premium_line_count)
+    save_dashboard_cache(data, refresh, premium_line_count=premium_line_count)
+    return data, refresh
+
+
+def build_dashboard_payload(premium_line_count: int = 5, allow_refresh: bool = False) -> Dict[str, object]:
+    if not allow_refresh:
+        cached = load_dashboard_cache(premium_line_count=premium_line_count)
+        if cached is not None:
+            data, refresh = cached
+            return {"data": data, "refresh": refresh_to_dict(refresh)}
+
+    if allow_refresh:
+        data, refresh = build_and_store_dashboard_cache(premium_line_count=premium_line_count)
+    else:
+        df = load_local_history()
+        refresh = local_refresh_result(df)
+        data = build_dashboard_data(df, premium_line_count=premium_line_count)
+
+    return {"data": data, "refresh": refresh_to_dict(refresh)}
 
 
 def render_table(rows: List[Dict[str, object]], columns: Sequence[Tuple[str, str]]) -> str:

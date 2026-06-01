@@ -13,6 +13,7 @@ euro.BASE_DIR = BASE
 euro.LOCAL_HISTORY = BASE / "euromillions_history_live.csv"
 euro.USER_ORIGINAL = BASE / "euromillions_export_2026-03-16.csv"
 euro.REFRESH_STATE_FILE = BASE / "euromillions_refresh_state.json"
+euro.DASHBOARD_CACHE = BASE / "euromillions_dashboard_payload.json"
 euro.ensure_base_dir = lambda: None
 
 
@@ -61,13 +62,13 @@ def home():
 @app.route("/euromillions")
 def euromillions():
     try:
-        df, refresh = euro.refresh_history()
-
         lines_count = request.args.get("lines", default=5, type=int)
         if lines_count not in [1, 3, 5, 10]:
             lines_count = 5
 
-        data = euro.build_dashboard_data(df, premium_line_count=lines_count)
+        payload = euro.build_dashboard_payload(premium_line_count=lines_count)
+        data = payload["data"]
+        refresh = euro.refresh_from_dict(payload["refresh"])
         html = euro.render_dashboard(data, refresh)
 
         response = Response(html, mimetype="text/html")
@@ -96,7 +97,8 @@ def admin_refresh():
             "message": "Set ADMIN_REFRESH_TOKEN and call with ?token=... or X-Admin-Token."
         }), 403
     try:
-        df, refresh = euro.refresh_history()
+        data, refresh = euro.build_and_store_dashboard_cache()
+        df = euro.load_local_history()
         state = euro.load_refresh_state()
         return jsonify({
             "ok": refresh.ok,
@@ -105,6 +107,7 @@ def admin_refresh():
             "draws_added": refresh.draws_added,
             "latest_date": refresh.latest_date,
             "rows": len(df),
+            "cache_history_rows": data.get("history_rows"),
             "quality": euro.history_quality_report(df),
             "last_success_at": state.get("last_success_at"),
             "last_attempt_at": state.get("last_attempt_at"),
@@ -167,8 +170,9 @@ def api_suggested():
         lines_count = request.args.get("lines", default=5, type=int)
         if lines_count not in [1, 3, 5, 10]:
             lines_count = 5
-        df, refresh = euro.refresh_history()
-        data = euro.build_dashboard_data(df, premium_line_count=lines_count)
+        payload = euro.build_dashboard_payload(premium_line_count=lines_count)
+        refresh = euro.refresh_from_dict(payload["refresh"])
+        data = payload["data"]
         return jsonify({
             "ok": True,
             "refresh": refresh.__dict__,

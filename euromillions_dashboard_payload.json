@@ -1,0 +1,616 @@
+{
+  "generated_at": "2026-06-01T20:29:18Z",
+  "premium_line_count": 5,
+  "data": {
+    "history_rows": 1950,
+    "latest_draw": {
+      "date": "2026-05-29",
+      "balls": [
+        5,
+        14,
+        18,
+        31,
+        35
+      ],
+      "stars": [
+        2,
+        12
+      ],
+      "draw_number": "1950",
+      "jackpot": "112,568,108",
+      "uk_code": "MNMB39412"
+    },
+    "main_top10": [
+      {
+        "rank": 1,
+        "number": 21,
+        "kind": "main",
+        "times_seen": 212,
+        "frequency_pct": 10.872,
+        "draws_since_seen": 36,
+        "score": 22.165
+      },
+      {
+        "rank": 2,
+        "number": 50,
+        "kind": "main",
+        "times_seen": 209,
+        "frequency_pct": 10.718,
+        "draws_since_seen": 23,
+        "score": 21.916
+      },
+      {
+        "rank": 3,
+        "number": 24,
+        "kind": "main",
+        "times_seen": 199,
+        "frequency_pct": 10.205,
+        "draws_since_seen": 25,
+        "score": 21.622
+      },
+      {
+        "rank": 4,
+        "number": 15,
+        "kind": "main",
+        "times_seen": 199,
+        "frequency_pct": 10.205,
+        "draws_since_seen": 24,
+        "score": 21.61
+      },
+      {
+        "rank": 5,
+        "number": 7,
+        "kind": "main",
+        "times_seen": 198,
+        "frequency_pct": 10.154,
+        "draws_since_seen": 25,
+        "score": 21.59
+      },
+      {
+        "rank": 6,
+        "number": 39,
+        "kind": "main",
+        "times_seen": 191,
+        "frequency_pct": 9.795,
+        "draws_since_seen": 26,
+        "score": 21.379
+      },
+      {
+        "rank": 7,
+        "number": 48,
+        "kind": "main",
+        "times_seen": 191,
+        "frequency_pct": 9.795,
+        "draws_since_seen": 18,
+        "score": 19.785
+      },
+      {
+        "rank": 8,
+        "number": 27,
+        "kind": "main",
+        "times_seen": 205,
+        "frequency_pct": 10.513,
+        "draws_since_seen": 16,
+        "score": 18.707
+      },
+      {
+        "rank": 9,
+        "number": 33,
+        "kind": "main",
+        "times_seen": 170,
+        "frequency_pct": 8.718,
+        "draws_since_seen": 17,
+        "score": 18.356
+      },
+      {
+        "rank": 10,
+        "number": 49,
+        "kind": "main",
+        "times_seen": 195,
+        "frequency_pct": 10.0,
+        "draws_since_seen": 15,
+        "score": 17.627
+      }
+    ],
+    "star_top10": [
+      {
+        "rank": 1,
+        "number": 10,
+        "kind": "star",
+        "times_seen": 278,
+        "frequency_pct": 14.256,
+        "draws_since_seen": 16,
+        "score": 21.028
+      },
+      {
+        "rank": 2,
+        "number": 3,
+        "kind": "star",
+        "times_seen": 384,
+        "frequency_pct": 19.692,
+        "draws_since_seen": 11,
+        "score": 20.589
+      },
+      {
+        "rank": 3,
+        "number": 4,
+        "kind": "star",
+        "times_seen": 307,
+        "frequency_pct": 15.744,
+        "draws_since_seen": 11,
+        "score": 18.141
+      },
+      {
+        "rank": 4,
+        "number": 1,
+        "kind": "star",
+        "times_seen": 334,
+        "frequency_pct": 17.128,
+        "draws_since_seen": 8,
+        "score": 16.714
+      },
+      {
+        "rank": 5,
+        "number": 7,
+        "kind": "star",
+        "times_seen": 345,
+        "frequency_pct": 17.692,
+        "draws_since_seen": 5,
+        "score": 14.778
+      },
+      {
+        "rank": 6,
+        "number": 9,
+        "kind": "star",
+        "times_seen": 359,
+        "frequency_pct": 18.41,
+        "draws_since_seen": 4,
+        "score": 14.462
+      },
+      {
+        "rank": 7,
+        "number": 8,
+        "kind": "star",
+        "times_seen": 372,
+        "frequency_pct": 19.077,
+        "draws_since_seen": 2,
+        "score": 13.351
+      },
+      {
+        "rank": 8,
+        "number": 11,
+        "kind": "star",
+        "times_seen": 263,
+        "frequency_pct": 13.487,
+        "draws_since_seen": 6,
+        "score": 12.933
+      },
+      {
+        "rank": 9,
+        "number": 5,
+        "kind": "star",
+        "times_seen": 348,
+        "frequency_pct": 17.846,
+        "draws_since_seen": 2,
+        "score": 12.588
+      },
+      {
+        "rank": 10,
+        "number": 2,
+        "kind": "star",
+        "times_seen": 386,
+        "frequency_pct": 19.795,
+        "draws_since_seen": 0,
+        "score": 12.273
+      }
+    ],
+    "suggested": [
+      {
+        "mode": "value",
+        "balls": "05 08 21 44 50",
+        "stars": "04 10",
+        "sum_balls": 128,
+        "odd_even": "2-3",
+        "low_high": "3-2",
+        "score": 80.152,
+        "value_score": 100.0,
+        "shape_score": 65.837,
+        "history_signal": 45.0,
+        "popularity_risk": 0.0
+      },
+      {
+        "mode": "value",
+        "balls": "07 16 28 33 44",
+        "stars": "03 07",
+        "sum_balls": 128,
+        "odd_even": "2-3",
+        "low_high": "2-3",
+        "score": 80.152,
+        "value_score": 100.0,
+        "shape_score": 65.837,
+        "history_signal": 45.0,
+        "popularity_risk": 0.0
+      },
+      {
+        "mode": "value",
+        "balls": "04 24 27 33 39",
+        "stars": "02 10",
+        "sum_balls": 127,
+        "odd_even": "3-2",
+        "low_high": "2-3",
+        "score": 80.148,
+        "value_score": 100.0,
+        "shape_score": 65.828,
+        "history_signal": 45.0,
+        "popularity_risk": 0.0
+      },
+      {
+        "mode": "value",
+        "balls": "07 11 30 33 46",
+        "stars": "03 08",
+        "sum_balls": 127,
+        "odd_even": "3-2",
+        "low_high": "2-3",
+        "score": 80.138,
+        "value_score": 100.0,
+        "shape_score": 65.828,
+        "history_signal": 44.898,
+        "popularity_risk": 0.0
+      },
+      {
+        "mode": "value",
+        "balls": "08 13 15 42 50",
+        "stars": "04 07",
+        "sum_balls": 128,
+        "odd_even": "2-3",
+        "low_high": "3-2",
+        "score": 80.097,
+        "value_score": 100.0,
+        "shape_score": 65.837,
+        "history_signal": 44.455,
+        "popularity_risk": 0.0
+      }
+    ],
+    "best_line": {
+      "mode": "value",
+      "balls": "05 08 21 44 50",
+      "stars": "04 10",
+      "sum_balls": 128,
+      "odd_even": "2-3",
+      "low_high": "3-2",
+      "score": 80.152,
+      "value_score": 100.0,
+      "shape_score": 65.837,
+      "history_signal": 45.0,
+      "popularity_risk": 0.0
+    },
+    "best_line_reason": "Chosen as the best realistic-value line: normal statistical shape, diversified numbers, and lower risk of sharing a prize with common human picks.",
+    "best_line_mode": "value",
+    "history_start": "2004-02-13",
+    "history_end": "2026-05-29",
+    "sum_mean": 127.51,
+    "sum_std": 29.81,
+    "recent_draws": [
+      {
+        "draw_date": "2026-05-29",
+        "balls": "05 14 18 31 35",
+        "stars": "02 12"
+      },
+      {
+        "draw_date": "2026-05-26",
+        "balls": "06 23 25 35 37",
+        "stars": "06 12"
+      },
+      {
+        "draw_date": "2026-05-22",
+        "balls": "06 22 26 31 37",
+        "stars": "05 08"
+      },
+      {
+        "draw_date": "2026-05-19",
+        "balls": "02 12 20 38 45",
+        "stars": "02 05"
+      },
+      {
+        "draw_date": "2026-05-15",
+        "balls": "03 10 38 41 43",
+        "stars": "02 09"
+      },
+      {
+        "draw_date": "2026-05-12",
+        "balls": "04 26 32 35 36",
+        "stars": "05 07"
+      },
+      {
+        "draw_date": "2026-05-08",
+        "balls": "02 17 19 34 37",
+        "stars": "08 11"
+      },
+      {
+        "draw_date": "2026-05-05",
+        "balls": "03 04 08 20 31",
+        "stars": "06 08"
+      },
+      {
+        "draw_date": "2026-05-01",
+        "balls": "03 09 42 46 47",
+        "stars": "01 11"
+      },
+      {
+        "draw_date": "2026-04-28",
+        "balls": "26 29 41 46 47",
+        "stars": "08 09"
+      }
+    ],
+    "refresh_state": {
+      "last_attempt_at": "2026-06-01T20:29:16Z",
+      "last_attempt_ok": true,
+      "last_attempt_source": "national_lottery_com_backfill+official_xml",
+      "last_attempt_message": "Refresh complete. Backfilled 22 missing draw(s) between local cache and latest official XML draw.",
+      "last_attempt_draws_added": 22,
+      "latest_date": "2026-05-29",
+      "last_success_at": "2026-06-01T20:29:16Z",
+      "last_success_source": "national_lottery_com_backfill+official_xml",
+      "last_success_message": "Refresh complete. Backfilled 22 missing draw(s) between local cache and latest official XML draw."
+    },
+    "hot_last_10": [
+      {
+        "number": 3,
+        "seen_last_n": 3
+      },
+      {
+        "number": 26,
+        "seen_last_n": 3
+      },
+      {
+        "number": 31,
+        "seen_last_n": 3
+      },
+      {
+        "number": 35,
+        "seen_last_n": 3
+      },
+      {
+        "number": 37,
+        "seen_last_n": 3
+      },
+      {
+        "number": 2,
+        "seen_last_n": 2
+      },
+      {
+        "number": 4,
+        "seen_last_n": 2
+      },
+      {
+        "number": 6,
+        "seen_last_n": 2
+      },
+      {
+        "number": 20,
+        "seen_last_n": 2
+      },
+      {
+        "number": 38,
+        "seen_last_n": 2
+      }
+    ],
+    "overdue_numbers": [
+      {
+        "number": 21,
+        "draws_since_seen": 36,
+        "times_seen": 212
+      },
+      {
+        "number": 39,
+        "draws_since_seen": 26,
+        "times_seen": 191
+      },
+      {
+        "number": 7,
+        "draws_since_seen": 25,
+        "times_seen": 198
+      },
+      {
+        "number": 24,
+        "draws_since_seen": 25,
+        "times_seen": 199
+      },
+      {
+        "number": 15,
+        "draws_since_seen": 24,
+        "times_seen": 199
+      },
+      {
+        "number": 50,
+        "draws_since_seen": 23,
+        "times_seen": 209
+      },
+      {
+        "number": 48,
+        "draws_since_seen": 18,
+        "times_seen": 191
+      },
+      {
+        "number": 33,
+        "draws_since_seen": 17,
+        "times_seen": 170
+      },
+      {
+        "number": 27,
+        "draws_since_seen": 16,
+        "times_seen": 205
+      },
+      {
+        "number": 11,
+        "draws_since_seen": 15,
+        "times_seen": 191
+      }
+    ],
+    "top_pairs": [
+      {
+        "pair": "04 23",
+        "count": 28
+      },
+      {
+        "pair": "15 28",
+        "count": 28
+      },
+      {
+        "pair": "23 24",
+        "count": 28
+      },
+      {
+        "pair": "23 37",
+        "count": 28
+      },
+      {
+        "pair": "39 44",
+        "count": 28
+      },
+      {
+        "pair": "01 48",
+        "count": 27
+      },
+      {
+        "pair": "17 35",
+        "count": 27
+      },
+      {
+        "pair": "17 45",
+        "count": 27
+      },
+      {
+        "pair": "19 37",
+        "count": 27
+      },
+      {
+        "pair": "23 32",
+        "count": 27
+      }
+    ],
+    "hot_last_10_chart": "<div class=\"mini-chart-title\">Hot numbers</div>\n            <div class=\"bar-row\">\n              <div class=\"bar-label\">3</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:100%\"></div>\n              </div>\n              <div class=\"bar-value\">3</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">26</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:100%\"></div>\n              </div>\n              <div class=\"bar-value\">3</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">31</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:100%\"></div>\n              </div>\n              <div class=\"bar-value\">3</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">35</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:100%\"></div>\n              </div>\n              <div class=\"bar-value\">3</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">37</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:100%\"></div>\n              </div>\n              <div class=\"bar-value\">3</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">2</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:66%\"></div>\n              </div>\n              <div class=\"bar-value\">2</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">4</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:66%\"></div>\n              </div>\n              <div class=\"bar-value\">2</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">6</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:66%\"></div>\n              </div>\n              <div class=\"bar-value\">2</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">20</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:66%\"></div>\n              </div>\n              <div class=\"bar-value\">2</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">38</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:66%\"></div>\n              </div>\n              <div class=\"bar-value\">2</div>\n            </div>\n            ",
+    "overdue_chart": "<div class=\"mini-chart-title\">Overdue numbers</div>\n            <div class=\"bar-row\">\n              <div class=\"bar-label\">21</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:100%\"></div>\n              </div>\n              <div class=\"bar-value\">36</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">39</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:72%\"></div>\n              </div>\n              <div class=\"bar-value\">26</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">7</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:69%\"></div>\n              </div>\n              <div class=\"bar-value\">25</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">24</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:69%\"></div>\n              </div>\n              <div class=\"bar-value\">25</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">15</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:66%\"></div>\n              </div>\n              <div class=\"bar-value\">24</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">50</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:63%\"></div>\n              </div>\n              <div class=\"bar-value\">23</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">48</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:50%\"></div>\n              </div>\n              <div class=\"bar-value\">18</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">33</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:47%\"></div>\n              </div>\n              <div class=\"bar-value\">17</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">27</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:44%\"></div>\n              </div>\n              <div class=\"bar-value\">16</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">11</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:41%\"></div>\n              </div>\n              <div class=\"bar-value\">15</div>\n            </div>\n            ",
+    "top_pairs_chart": "<div class=\"mini-chart-title\">Top pairs</div>\n            <div class=\"bar-row\">\n              <div class=\"bar-label\">04 23</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:100%\"></div>\n              </div>\n              <div class=\"bar-value\">28</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">15 28</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:100%\"></div>\n              </div>\n              <div class=\"bar-value\">28</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">23 24</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:100%\"></div>\n              </div>\n              <div class=\"bar-value\">28</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">23 37</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:100%\"></div>\n              </div>\n              <div class=\"bar-value\">28</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">39 44</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:100%\"></div>\n              </div>\n              <div class=\"bar-value\">28</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">01 48</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:96%\"></div>\n              </div>\n              <div class=\"bar-value\">27</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">17 35</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:96%\"></div>\n              </div>\n              <div class=\"bar-value\">27</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">17 45</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:96%\"></div>\n              </div>\n              <div class=\"bar-value\">27</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">19 37</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:96%\"></div>\n              </div>\n              <div class=\"bar-value\">27</div>\n            </div>\n            \n            <div class=\"bar-row\">\n              <div class=\"bar-label\">23 32</div>\n              <div class=\"bar-track\">\n                <div class=\"bar-fill\" style=\"width:96%\"></div>\n              </div>\n              <div class=\"bar-value\">27</div>\n            </div>\n            ",
+    "premium_line_count": 5,
+    "quality": {
+      "ok": true,
+      "missing_recent_count": 0,
+      "missing_recent_dates": [],
+      "duplicate_dates": 0,
+      "invalid_rows": 0,
+      "notes": [
+        "Recent history completeness check passed."
+      ]
+    },
+    "odds": {
+      "lines": 5,
+      "jackpot_odds_text": "about 1 in 27,967,633",
+      "jackpot_probability_pct": 3.576e-06,
+      "any_prize_odds_text": "about 1 in 3.0 for this pack",
+      "any_prize_probability_pct": 33.039164,
+      "any_prize_single_line_odds_text": "about 1 in 12.97 per line",
+      "estimated_cost_gbp": 12.5,
+      "estimated_cost_text": "£12.50",
+      "gross_expected_prize_gbp": 3.88,
+      "gross_expected_prize_text": "£3.88",
+      "expected_loss_warning": "Lottery expected value is normally negative after ticket cost; treat play as entertainment, not income.",
+      "truth": "Every valid EuroMillions line has the same jackpot probability; the engine can only improve data quality, diversification, and payout-sharing risk.",
+      "total_combinations": "139,838,160",
+      "tiers": [
+        {
+          "match": "5 + 2",
+          "odds": 139838160,
+          "avg_prize_gbp": 61611320.84
+        },
+        {
+          "match": "5 + 1",
+          "odds": 6991908,
+          "avg_prize_gbp": 268551.81
+        },
+        {
+          "match": "5",
+          "odds": 3107515,
+          "avg_prize_gbp": 25413.56
+        },
+        {
+          "match": "4 + 2",
+          "odds": 621503,
+          "avg_prize_gbp": 1363.07
+        },
+        {
+          "match": "4 + 1",
+          "odds": 31076,
+          "avg_prize_gbp": 92.88
+        },
+        {
+          "match": "3 + 2",
+          "odds": 14126,
+          "avg_prize_gbp": 49.05
+        },
+        {
+          "match": "4",
+          "odds": 13812,
+          "avg_prize_gbp": 30.99
+        },
+        {
+          "match": "2 + 2",
+          "odds": 986,
+          "avg_prize_gbp": 10.66
+        },
+        {
+          "match": "3 + 1",
+          "odds": 707,
+          "avg_prize_gbp": 8.24
+        },
+        {
+          "match": "3",
+          "odds": 314,
+          "avg_prize_gbp": 6.8
+        },
+        {
+          "match": "1 + 2",
+          "odds": 188,
+          "avg_prize_gbp": 5.23
+        },
+        {
+          "match": "2 + 1",
+          "odds": 50,
+          "avg_prize_gbp": 4.15
+        },
+        {
+          "match": "2",
+          "odds": 22,
+          "avg_prize_gbp": 2.72
+        }
+      ]
+    },
+    "strategy": {
+      "selected_lines": 5,
+      "cost_per_draw_gbp": 12.5,
+      "cost_per_draw_text": "£12.50",
+      "monthly_if_two_draws_per_week_gbp": 108.75,
+      "monthly_if_two_draws_per_week_text": "£108.75",
+      "best_practice": [
+        "Set a fixed monthly cap before playing.",
+        "Prefer 3-5 diversified lines over chasing many similar lines.",
+        "Never increase spend after losses; each draw is independent.",
+        "If playing with family/friends, write the split agreement before buying."
+      ]
+    },
+    "diversity": {
+      "ok": true,
+      "unique_main_numbers": 19,
+      "max_pair_overlap": 2,
+      "average_pair_overlap": 0.7,
+      "message": "Good diversification"
+    }
+  },
+  "refresh": {
+    "source": "national_lottery_com_backfill+official_xml",
+    "ok": true,
+    "message": "Refresh complete. Backfilled 22 missing draw(s) between local cache and latest official XML draw.",
+    "draws_added": 22,
+    "latest_date": "2026-05-29"
+  }
+}
