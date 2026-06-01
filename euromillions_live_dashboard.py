@@ -36,7 +36,8 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36"
 )
 
-BASE_DIR = Path.home() / "Data" / "Euro"
+APP_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(os.environ.get("LOTTERY_DATA_DIR", APP_DIR))
 LOCAL_HISTORY = BASE_DIR / "euromillions_history_live.csv"
 USER_ORIGINAL = BASE_DIR / "euromillions_export_2026-03-16.csv"
 REFRESH_STATE_FILE = BASE_DIR / "euromillions_refresh_state.json"
