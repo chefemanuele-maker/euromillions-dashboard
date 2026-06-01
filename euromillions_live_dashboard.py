@@ -1850,3 +1850,49 @@ function refreshNow() {{ window.location.reload(); }}
 </div>
 </body>
 </html>"""
+
+
+try:
+    from flask import Flask, Response, jsonify, request
+
+    app = Flask(__name__)
+
+    @app.route("/")
+    def flask_home():
+        return """
+        <html>
+        <head><title>EuroMillions Dashboard</title></head>
+        <body style="background:#0b0f19;color:white;font-family:Arial;padding:40px;">
+            <h1>EuroMillions Dashboard</h1>
+            <p>Server running on Render</p>
+            <a style="color:#4dd0ff;font-size:22px;" href="/euromillions">Open EuroMillions Dashboard</a>
+        </body>
+        </html>
+        """
+
+    @app.route("/euromillions")
+    def flask_euromillions():
+        lines_count = request.args.get("lines", default=5, type=int)
+        if lines_count not in [1, 3, 5, 10]:
+            lines_count = 5
+        payload = build_dashboard_payload(premium_line_count=lines_count)
+        refresh = refresh_from_dict(payload["refresh"])
+        page = render_dashboard(payload["data"], refresh)
+        return Response(page, mimetype="text/html")
+
+    @app.route("/api/suggested")
+    def flask_api_suggested():
+        lines_count = request.args.get("lines", default=5, type=int)
+        if lines_count not in [1, 3, 5, 10]:
+            lines_count = 5
+        payload = build_dashboard_payload(premium_line_count=lines_count)
+        data = payload["data"]
+        return jsonify({
+            "ok": True,
+            "refresh": payload["refresh"],
+            "quality": data.get("quality"),
+            "best_line": data.get("best_line"),
+            "suggested": data.get("suggested"),
+        })
+except Exception:
+    app = None
