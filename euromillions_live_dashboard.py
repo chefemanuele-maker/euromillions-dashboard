@@ -10,6 +10,7 @@ import re
 import secrets
 import sys
 import html
+import hashlib
 import datetime as dt
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
@@ -794,20 +795,76 @@ def save_dashboard_cache(data: Dict[str, object], refresh: RefreshResult, premiu
     save_json_atomic(DASHBOARD_CACHE, payload)
 
 
-def load_dashboard_cache(premium_line_count: int = 5) -> Optional[Tuple[Dict[str, object], RefreshResult]]:
+def parse_utc_timestamp(value: object) -> Optional[dt.datetime]:
+    if not value:
+        return None
+    try:
+        return dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def latest_local_history_end() -> Optional[str]:
+    try:
+        df = load_local_history()
+        if df.empty or "draw_date" not in df.columns:
+            return None
+        latest = pd.to_datetime(df["draw_date"], errors="coerce").max()
+        if pd.isna(latest):
+            return None
+        return latest.date().isoformat()
+    except Exception:
+        logger.exception("Local history check failed while validating dashboard cache")
+        return None
+
+
+def local_history_newer_than_cache(generated_at: object) -> bool:
+    generated = parse_utc_timestamp(generated_at)
+    if generated is None:
+        return True
+
+    local_paths = [path for path in [LOCAL_HISTORY, USER_ORIGINAL] if path.exists()]
+    if not local_paths:
+        return False
+
+    newest_mtime = max(dt.datetime.fromtimestamp(path.stat().st_mtime, tz=dt.timezone.utc) for path in local_paths)
+    return newest_mtime > generated
+
+
+def load_dashboard_cache(premium_line_count: int = 5) -> Optional[Tuple[Dict[str, object], RefreshResult, str]]:
     if not DASHBOARD_CACHE.exists():
         return None
     try:
         payload = json.loads(DASHBOARD_CACHE.read_text(encoding="utf-8"))
         data = payload.get("data")
         refresh = payload.get("refresh")
+        generated_at = str(payload.get("generated_at", ""))
         cached_lines = int(payload.get("premium_line_count", premium_line_count) or premium_line_count)
         if cached_lines != int(premium_line_count):
             return None
         if not isinstance(data, dict) or not isinstance(refresh, dict):
             return None
-        return data, refresh_from_dict(refresh)
+        if not data.get("target_seed"):
+            logger.info("Ignoring stale dashboard cache: missing deterministic target seed")
+            return None
+
+        local_history_end = latest_local_history_end()
+        cached_history_end = data.get("history_end")
+        if local_history_end and cached_history_end != local_history_end:
+            logger.info(
+                "Ignoring stale dashboard cache: cached history_end=%s local history_end=%s",
+                cached_history_end,
+                local_history_end,
+            )
+            return None
+
+        if local_history_newer_than_cache(generated_at):
+            logger.info("Ignoring stale dashboard cache: local history file is newer than cache")
+            return None
+
+        return data, refresh_from_dict(refresh), generated_at
     except Exception:
+        logger.exception("Dashboard cache load failed")
         return None
 
 
@@ -1154,16 +1211,14 @@ def line_score(
     return round(base + sum_bonus + spread_bonus + overlap_bonus - consecutive_penalty, 3)
 
 
-def generate_suggested_lines(df: pd.DataFrame, lines_per_mode: int = 4, seed: int = 42) -> pd.DataFrame:
+def generate_suggested_lines(df: pd.DataFrame, lines_per_mode: int = 4, seed: Optional[int] = 42) -> pd.DataFrame:
     main_rank = build_rank_table(df, MAIN_RANGE, [f"ball_{i}" for i in range(1, 6)], "main")
     star_rank = build_rank_table(df, STAR_RANGE, ["lucky_star_1", "lucky_star_2"], "star")
 
     hist_sum_mean = float(df["sum_balls"].mean())
     hist_sum_std = float(df["sum_balls"].std(ddof=0) or 1.0)
 
-    # Use real entropy by default.  A fixed seed made the app repeat the same
-    # lines forever, which looks clever but is not a good lottery workflow.
-    rng = secrets.SystemRandom()
+    rng = random.Random(seed) if seed is not None else secrets.SystemRandom()
     main_weights = {row["number"]: float(row["score"]) for _, row in main_rank.iterrows()}
     star_weights = {row["number"]: float(row["score"]) for _, row in star_rank.iterrows()}
     main_score_lookup = main_rank.set_index("number")["score"].to_dict()
@@ -1261,9 +1316,24 @@ def generate_suggested_lines(df: pd.DataFrame, lines_per_mode: int = 4, seed: in
     return out
 
 
+def target_line_seed(df: pd.DataFrame, total_lines: int) -> int:
+    latest = df.iloc[-1]
+    latest_date = latest["draw_date"].date().isoformat() if hasattr(latest["draw_date"], "date") else str(latest["draw_date"])
+    draw_number = "" if pd.isna(latest.get("draw_number")) else str(latest.get("draw_number"))
+    balls = "-".join(str(int(latest[f"ball_{i}"])) for i in range(1, 6))
+    stars = f"{int(latest['lucky_star_1'])}-{int(latest['lucky_star_2'])}"
+    seed_material = f"{latest_date}|{draw_number}|{balls}|{stars}|{int(total_lines)}"
+    digest = hashlib.sha256(seed_material.encode("utf-8")).hexdigest()
+    return int(digest[:16], 16)
+
+
 def generate_premium_line_pack(df: pd.DataFrame, total_lines: int = 5) -> pd.DataFrame:
     hist = enrich_history(df)
-    base = generate_suggested_lines(hist, lines_per_mode=max(3, total_lines), seed=42)
+    base = generate_suggested_lines(
+        hist,
+        lines_per_mode=max(3, total_lines),
+        seed=target_line_seed(hist, total_lines),
+    )
 
     target_order = ["value", "balanced", "coverage", "anti_last_draw"]
     selected_rows: List[Dict[str, object]] = []
@@ -1343,6 +1413,7 @@ def build_dashboard_data(df: pd.DataFrame, premium_line_count: int = 5) -> Dict[
     hist = enrich_history(df)
     main_rank = build_rank_table(hist, MAIN_RANGE, [f"ball_{i}" for i in range(1, 6)], "main")
     star_rank = build_rank_table(hist, STAR_RANGE, ["lucky_star_1", "lucky_star_2"], "star")
+    seed = target_line_seed(hist, premium_line_count)
     suggested = generate_premium_line_pack(hist, total_lines=premium_line_count)
     best_line, decision = choose_best_line(suggested)
     state = load_refresh_state()
@@ -1387,6 +1458,7 @@ def build_dashboard_data(df: pd.DataFrame, premium_line_count: int = 5) -> Dict[
     return {
         "history_rows": len(hist),
         "latest_draw": latest_draw,
+        "target_seed": seed,
         "main_top10": main_rank.head(10).to_dict(orient="records"),
         "star_top10": star_rank.head(10).to_dict(orient="records"),
         "suggested": suggested.to_dict(orient="records"),
@@ -1424,17 +1496,31 @@ def build_dashboard_payload(premium_line_count: int = 5, allow_refresh: bool = F
     if not allow_refresh:
         cached = load_dashboard_cache(premium_line_count=premium_line_count)
         if cached is not None:
-            data, refresh = cached
-            return {"data": data, "refresh": refresh_to_dict(refresh)}
+            data, refresh, generated_at = cached
+            return {
+                "data": data,
+                "refresh": refresh_to_dict(refresh),
+                "generated_at": generated_at,
+                "cache_used": True,
+            }
 
     if allow_refresh:
         data, refresh = build_and_store_dashboard_cache(premium_line_count=premium_line_count)
+        cache_used = False
+        generated_at = dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     else:
         df = load_local_history()
         refresh = local_refresh_result(df)
         data = build_dashboard_data(df, premium_line_count=premium_line_count)
+        cache_used = False
+        generated_at = dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
-    return {"data": data, "refresh": refresh_to_dict(refresh)}
+    return {
+        "data": data,
+        "refresh": refresh_to_dict(refresh),
+        "generated_at": generated_at,
+        "cache_used": cache_used,
+    }
 
 
 def render_table(rows: List[Dict[str, object]], columns: Sequence[Tuple[str, str]]) -> str:
@@ -1738,6 +1824,7 @@ function refreshNow() {{ window.location.reload(); }}
     <div class=\"card\">
       <div class=\"section-title\">Target line for next draw</div>
       <div>{mode_chip(str(data['best_line_mode']))}</div>
+      <p class=\"small-note\">Based on latest draw in history: {html.escape(str(latest['date']))}.</p>
       <div class=\"hero-line\" style=\"margin-top:14px;\">{best_balls_html}</div>
       <div class=\"hero-line\">{best_stars_html}</div>
       <div id=\"best-line-copy\" class=\"inline-cmd\" style=\"margin-top:14px;\">Main numbers: {html.escape(str(best['balls']))} | Stars: {html.escape(str(best['stars']))}</div>

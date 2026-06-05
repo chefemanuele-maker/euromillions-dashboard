@@ -186,6 +186,10 @@ def api_suggested():
         data = payload["data"]
         return jsonify({
             "ok": True,
+            "latest_draw": data["latest_draw"],
+            "history_end": data["history_end"],
+            "generated_at": payload.get("generated_at"),
+            "cache_used": payload.get("cache_used", False),
             "refresh": refresh.__dict__,
             "odds": data["odds"],
             "best_line": data["best_line"],
