@@ -238,7 +238,6 @@ def load_local_history() -> pd.DataFrame:
         raise FileNotFoundError("No usable EuroMillions CSV found in the project folder.")
 
     df = dedupe_history(pd.concat(frames, ignore_index=True))
-    persist_history(df)
     logger.info("Loaded local history | rows=%s | latest=%s", len(df), df["draw_date"].max())
     return df
 

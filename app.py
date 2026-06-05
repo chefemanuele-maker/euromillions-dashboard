@@ -1,6 +1,5 @@
 import os
 import io
-import traceback
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, send_file, request
@@ -77,12 +76,12 @@ def euromillions():
         response.headers["Expires"] = "0"
         return response
     except Exception:
-        err = traceback.format_exc()
+        app.logger.exception("EuroMillions dashboard failed")
         return f"""
         <html>
         <body style="background:#0b0f19;color:white;font-family:Arial;padding:40px;">
             <h1>EuroMillions error</h1>
-            <pre>{err}</pre>
+            <p>The dashboard could not load right now. Please try again later.</p>
         </body>
         </html>
         """, 500
@@ -115,9 +114,11 @@ def admin_refresh():
             "user_original_file": str(euro.USER_ORIGINAL),
         })
     except Exception:
+        app.logger.exception("Admin refresh failed")
         return jsonify({
             "ok": False,
-            "error": traceback.format_exc()
+            "error": "admin_refresh_failed",
+            "message": "The refresh job failed. Check server logs for details."
         }), 500
 
 
@@ -133,7 +134,12 @@ def download_history():
             download_name="euromillions_history_live.csv",
         )
     except Exception:
-        return jsonify({"ok": False, "error": traceback.format_exc()}), 500
+        app.logger.exception("History download failed")
+        return jsonify({
+            "ok": False,
+            "error": "history_download_failed",
+            "message": "The history CSV could not be generated."
+        }), 500
 
 
 @app.route("/download/suggested")
@@ -150,7 +156,12 @@ def download_suggested():
             download_name="euromillions_suggested_lines.csv",
         )
     except Exception:
-        return jsonify({"ok": False, "error": traceback.format_exc()}), 500
+        app.logger.exception("Suggested lines download failed")
+        return jsonify({
+            "ok": False,
+            "error": "suggested_download_failed",
+            "message": "The suggested lines CSV could not be generated."
+        }), 500
 
 
 @app.route("/api/odds")
@@ -185,7 +196,12 @@ def api_suggested():
             "diversity": data["diversity"],
         })
     except Exception:
-        return jsonify({"ok": False, "error": traceback.format_exc()}), 500
+        app.logger.exception("Suggested API failed")
+        return jsonify({
+            "ok": False,
+            "error": "suggested_api_failed",
+            "message": "Suggested lines are unavailable right now."
+        }), 500
 
 
 if __name__ == "__main__":
