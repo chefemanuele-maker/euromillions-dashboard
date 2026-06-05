@@ -40,6 +40,7 @@ USER_AGENT = (
 APP_DIR = Path(__file__).resolve().parent
 BASE_DIR = Path(os.environ.get("LOTTERY_DATA_DIR", APP_DIR))
 LOCAL_HISTORY = BASE_DIR / "euromillions_history_live.csv"
+BASELINE_HISTORY = BASE_DIR / "euromillions_export_2026-06-02.csv"
 USER_ORIGINAL = BASE_DIR / "euromillions_export_2026-03-16.csv"
 REFRESH_STATE_FILE = BASE_DIR / "euromillions_refresh_state.json"
 DASHBOARD_CACHE = BASE_DIR / "euromillions_dashboard_payload.json"
@@ -223,6 +224,8 @@ def load_local_history() -> pd.DataFrame:
     candidates = []
     if LOCAL_HISTORY.exists():
         candidates.append(LOCAL_HISTORY)
+    if BASELINE_HISTORY.exists():
+        candidates.append(BASELINE_HISTORY)
     if USER_ORIGINAL.exists():
         candidates.append(USER_ORIGINAL)
 

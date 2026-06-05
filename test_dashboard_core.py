@@ -16,10 +16,12 @@ class EuroMillionsCoreTests(unittest.TestCase):
     def setUp(self):
         self._original_paths = (
             euro.LOCAL_HISTORY,
+            euro.BASELINE_HISTORY,
             euro.USER_ORIGINAL,
             euro.REFRESH_STATE_FILE,
             euro.DASHBOARD_CACHE,
             app_module.euro.LOCAL_HISTORY,
+            app_module.euro.BASELINE_HISTORY,
             app_module.euro.USER_ORIGINAL,
             app_module.euro.REFRESH_STATE_FILE,
             app_module.euro.DASHBOARD_CACHE,
@@ -28,10 +30,12 @@ class EuroMillionsCoreTests(unittest.TestCase):
     def tearDown(self):
         (
             euro.LOCAL_HISTORY,
+            euro.BASELINE_HISTORY,
             euro.USER_ORIGINAL,
             euro.REFRESH_STATE_FILE,
             euro.DASHBOARD_CACHE,
             app_module.euro.LOCAL_HISTORY,
+            app_module.euro.BASELINE_HISTORY,
             app_module.euro.USER_ORIGINAL,
             app_module.euro.REFRESH_STATE_FILE,
             app_module.euro.DASHBOARD_CACHE,
@@ -43,13 +47,16 @@ class EuroMillionsCoreTests(unittest.TestCase):
         official = euro.standardize_columns(pd.read_csv(fixture)).tail(1)
 
         local_history = temp_dir / "euromillions_history_live.csv"
+        baseline_history = temp_dir / "euromillions_export_2026-06-02.csv"
         user_original = temp_dir / "euromillions_export_2026-03-16.csv"
         state_file = temp_dir / "euromillions_refresh_state.json"
         cache_file = temp_dir / "euromillions_dashboard_payload.json"
         history.to_csv(local_history, index=False)
+        history.to_csv(baseline_history, index=False)
         history.to_csv(user_original, index=False)
 
         euro.LOCAL_HISTORY = app_module.euro.LOCAL_HISTORY = local_history
+        euro.BASELINE_HISTORY = app_module.euro.BASELINE_HISTORY = baseline_history
         euro.USER_ORIGINAL = app_module.euro.USER_ORIGINAL = user_original
         euro.REFRESH_STATE_FILE = app_module.euro.REFRESH_STATE_FILE = state_file
         euro.DASHBOARD_CACHE = app_module.euro.DASHBOARD_CACHE = cache_file
@@ -112,6 +119,27 @@ class EuroMillionsCoreTests(unittest.TestCase):
             backfill.assert_not_called()
             self.assertFalse(payload["cache_used"])
             self.assertEqual(payload["refresh"]["source"], "official_xml_quick")
+
+    def test_cold_deploy_baseline_has_complete_recent_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = Path(tmp)
+            baseline = Path(__file__).with_name("euromillions_export_2026-06-02.csv")
+            temp_baseline = temp_dir / baseline.name
+            temp_baseline.write_bytes(baseline.read_bytes())
+
+            euro.LOCAL_HISTORY = app_module.euro.LOCAL_HISTORY = temp_dir / "euromillions_history_live.csv"
+            euro.BASELINE_HISTORY = app_module.euro.BASELINE_HISTORY = temp_baseline
+            euro.USER_ORIGINAL = app_module.euro.USER_ORIGINAL = temp_dir / "euromillions_export_2026-03-16.csv"
+            euro.REFRESH_STATE_FILE = app_module.euro.REFRESH_STATE_FILE = temp_dir / "euromillions_refresh_state.json"
+            euro.DASHBOARD_CACHE = app_module.euro.DASHBOARD_CACHE = temp_dir / "euromillions_dashboard_payload.json"
+
+            df = euro.load_local_history()
+            quality = euro.history_quality_report(df)
+
+            self.assertEqual(len(df), 1951)
+            self.assertEqual(str(pd.to_datetime(df["draw_date"]).dt.date.max()), "2026-06-02")
+            self.assertTrue(quality["ok"])
+            self.assertEqual(quality["missing_recent_count"], 0)
 
     def test_public_routes_skip_backfill_when_cache_missing(self):
         with tempfile.TemporaryDirectory() as tmp:

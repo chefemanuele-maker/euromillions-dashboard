@@ -5,6 +5,7 @@ FILES TO KEEP IN YOUR GITHUB REPO:
 - requirements.txt
 - render.yaml
 - euromillions_live_dashboard.py
+- euromillions_export_2026-06-02.csv
 - euromillions_export_2026-03-16.csv
 - trigger_admin_refresh.py
 
@@ -22,11 +23,14 @@ LOCAL DEVELOPMENT:
 - Run locally: gunicorn app:app
 
 NOTES:
+- euromillions_history_live.csv is a runtime file and is intentionally ignored by Git.
+- euromillions_export_YYYY-MM-DD.csv files are versioned baseline history snapshots for cold deploys.
+- Render cold deploys prefer euromillions_export_2026-06-02.csv when no runtime CSV exists, then fall back to euromillions_export_2026-03-16.csv only if necessary.
 - /euromillions first tries to serve the existing dashboard cache for the selected line count.
-- If no valid cache exists, /euromillions attempts an online refresh and stores a runtime cache.
-- If online refresh is unavailable, /euromillions falls back to local CSV history.
+- If no valid cache exists, /euromillions uses a quick public refresh path: local/runtime or baseline CSV plus the official XML latest draw only. It does not run long HTML backfill in public requests.
+- If quick online refresh is unavailable, /euromillions falls back to local/baseline CSV history.
 - Loading local history is read-only; it does not rewrite the CSV during normal page/API/download requests.
-- Online refresh and cache writes happen through stale/missing cache repair, refresh_job.py, or the token-protected /admin/refresh endpoint.
+- Full online refresh, HTML backfill, runtime CSV writes, and cache writes happen through refresh_job.py or the token-protected /admin/refresh endpoint.
 - Render cron calls the web service /admin/refresh endpoint so the web runtime cache is updated; running refresh_job.py in a separate cron container does not update the web service filesystem.
 - /admin/refresh is locked unless ADMIN_REFRESH_TOKEN is configured and supplied via ?token=... or X-Admin-Token.
 - Runtime files are intentionally ignored by Git: euromillions_history_live.csv, euromillions_refresh_state.json, and euromillions_dashboard_payload.json.

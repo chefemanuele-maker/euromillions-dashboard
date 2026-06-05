@@ -4,6 +4,7 @@ import euromillions_live_dashboard as euro
 BASE = Path(__file__).resolve().parent
 euro.BASE_DIR = BASE
 euro.LOCAL_HISTORY = BASE / "euromillions_history_live.csv"
+euro.BASELINE_HISTORY = BASE / "euromillions_export_2026-06-02.csv"
 euro.USER_ORIGINAL = BASE / "euromillions_export_2026-03-16.csv"
 euro.REFRESH_STATE_FILE = BASE / "euromillions_refresh_state.json"
 euro.DASHBOARD_CACHE = BASE / "euromillions_dashboard_payload.json"
