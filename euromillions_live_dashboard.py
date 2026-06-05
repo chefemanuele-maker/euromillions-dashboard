@@ -685,7 +685,7 @@ def history_quality_report(df: pd.DataFrame) -> Dict[str, object]:
         "notes": notes,
     }
 
-def refresh_history() -> Tuple[pd.DataFrame, RefreshResult]:
+def refresh_history(allow_backfill: bool = True, persist: bool = True) -> Tuple[pd.DataFrame, RefreshResult]:
     df = load_local_history()
     before = len(df)
     sources: List[str] = []
@@ -697,7 +697,7 @@ def refresh_history() -> Tuple[pd.DataFrame, RefreshResult]:
         if official.empty:
             raise ValueError("Official XML returned no valid draws.")
         latest_official = pd.to_datetime(official["draw_date"], errors="coerce").dt.date.max()
-        if latest_official:
+        if latest_official and allow_backfill:
             backfill_df, backfilled, backfill_errors = fetch_missing_backfill(df, latest_official)
             if not backfill_df.empty:
                 df = dedupe_history(pd.concat([df, backfill_df], ignore_index=True))
@@ -706,23 +706,27 @@ def refresh_history() -> Tuple[pd.DataFrame, RefreshResult]:
                 warnings.append(
                     "Official XML currently exposes only the latest draw; historical backfill was unavailable."
                 )
+        elif latest_official:
+            warnings.append("Backfill skipped for public quick refresh.")
         df = dedupe_history(pd.concat([df, official], ignore_index=True))
-        sources.append("official_xml")
+        sources.append("official_xml" if allow_backfill else "official_xml_quick")
     except Exception as xml_exc:
         logger.exception("Official XML refresh failed")
         warnings.append(f"Official XML failed: {xml_exc}")
 
-        try:
-            html_backup = fetch_official_html_backup()
-            if html_backup.empty:
-                raise ValueError("Official HTML backup returned no valid draws.")
-            df = dedupe_history(pd.concat([df, html_backup], ignore_index=True))
-            sources.append("official_html_backup")
-        except Exception as html_exc:
-            logger.exception("Official HTML backup refresh failed")
-            warnings.append(f"HTML backup failed: {html_exc}")
+        if allow_backfill:
+            try:
+                html_backup = fetch_official_html_backup()
+                if html_backup.empty:
+                    raise ValueError("Official HTML backup returned no valid draws.")
+                df = dedupe_history(pd.concat([df, html_backup], ignore_index=True))
+                sources.append("official_html_backup")
+            except Exception as html_exc:
+                logger.exception("Official HTML backup refresh failed")
+                warnings.append(f"HTML backup failed: {html_exc}")
 
-    persist_history(df)
+    if persist:
+        persist_history(df)
     added = max(0, len(df) - before)
     latest_date = str(df["draw_date"].max()) if not df.empty else None
     quality = history_quality_report(df)
@@ -749,13 +753,14 @@ def refresh_history() -> Tuple[pd.DataFrame, RefreshResult]:
         draws_added=added,
         latest_date=latest_date,
     )
-    save_refresh_state(
-        ok=result.ok,
-        source=result.source,
-        message=result.message,
-        draws_added=result.draws_added,
-        latest_date=result.latest_date,
-    )
+    if persist:
+        save_refresh_state(
+            ok=result.ok,
+            source=result.source,
+            message=result.message,
+            draws_added=result.draws_added,
+            latest_date=result.latest_date,
+        )
     return df, result
 
 
@@ -1486,9 +1491,15 @@ def build_dashboard_data(df: pd.DataFrame, premium_line_count: int = 5) -> Dict[
 
 
 def build_and_store_dashboard_cache(premium_line_count: int = 5) -> Tuple[Dict[str, object], RefreshResult]:
-    df, refresh = refresh_history()
+    df, refresh = refresh_history(allow_backfill=True, persist=True)
     data = build_dashboard_data(df, premium_line_count=premium_line_count)
     save_dashboard_cache(data, refresh, premium_line_count=premium_line_count)
+    return data, refresh
+
+
+def build_quick_dashboard_payload(premium_line_count: int = 5) -> Tuple[Dict[str, object], RefreshResult]:
+    df, refresh = refresh_history(allow_backfill=False, persist=False)
+    data = build_dashboard_data(df, premium_line_count=premium_line_count)
     return data, refresh
 
 
@@ -1510,11 +1521,11 @@ def build_dashboard_payload(premium_line_count: int = 5, allow_refresh: bool = F
         generated_at = dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     else:
         try:
-            data, refresh = build_and_store_dashboard_cache(premium_line_count=premium_line_count)
+            data, refresh = build_quick_dashboard_payload(premium_line_count=premium_line_count)
         except Exception:
-            logger.exception("Automatic dashboard refresh failed; using local CSV history")
+            logger.exception("Quick dashboard refresh failed; using local CSV history")
             df = load_local_history()
-            refresh = local_refresh_result(df, "Loaded local CSV history after automatic refresh was unavailable.")
+            refresh = local_refresh_result(df, "Loaded local CSV history after quick refresh was unavailable.")
             data = build_dashboard_data(df, premium_line_count=premium_line_count)
         cache_used = False
         generated_at = dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
