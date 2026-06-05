@@ -13,4 +13,4 @@ services:
     plan: free
     schedule: "*/30 * * * *"
     buildCommand: pip install -r requirements.txt
-    startCommand: python refresh_job.py
+    startCommand: python trigger_admin_refresh.py

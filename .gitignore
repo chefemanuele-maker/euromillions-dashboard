@@ -3,3 +3,4 @@ __pycache__/
 .venv/
 euromillions_history_live.csv
 euromillions_refresh_state.json
+euromillions_dashboard_payload.json

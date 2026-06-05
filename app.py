@@ -66,7 +66,11 @@ def euromillions():
             lines_count = 5
 
         payload = euro.build_dashboard_payload(premium_line_count=lines_count)
-        data = payload["data"]
+        data = dict(payload["data"])
+        data["runtime_status"] = {
+            "cache_used": payload.get("cache_used", False),
+            "generated_at": payload.get("generated_at"),
+        }
         refresh = euro.refresh_from_dict(payload["refresh"])
         html = euro.render_dashboard(data, refresh)
 

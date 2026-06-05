@@ -1509,9 +1509,13 @@ def build_dashboard_payload(premium_line_count: int = 5, allow_refresh: bool = F
         cache_used = False
         generated_at = dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     else:
-        df = load_local_history()
-        refresh = local_refresh_result(df)
-        data = build_dashboard_data(df, premium_line_count=premium_line_count)
+        try:
+            data, refresh = build_and_store_dashboard_cache(premium_line_count=premium_line_count)
+        except Exception:
+            logger.exception("Automatic dashboard refresh failed; using local CSV history")
+            df = load_local_history()
+            refresh = local_refresh_result(df, "Loaded local CSV history after automatic refresh was unavailable.")
+            data = build_dashboard_data(df, premium_line_count=premium_line_count)
         cache_used = False
         generated_at = dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
@@ -1553,6 +1557,7 @@ def mode_chip(mode: str) -> str:
 def render_dashboard(data: Dict[str, object], refresh: RefreshResult) -> str:
     latest = data["latest_draw"]
     best = data["best_line"]
+    runtime = data.get("runtime_status", {}) if isinstance(data.get("runtime_status", {}), dict) else {}
     state = data.get("refresh_state", {})
     quality = data.get("quality", {})
     odds = data.get("odds", {})
@@ -1599,6 +1604,8 @@ def render_dashboard(data: Dict[str, object], refresh: RefreshResult) -> str:
     last_success_at = state.get("last_success_at", "-")
     last_attempt_at = state.get("last_attempt_at", "-")
     last_success_source = state.get("last_success_source", "-")
+    cache_used_text = "yes" if runtime.get("cache_used") else "no"
+    payload_generated_at = runtime.get("generated_at", "-")
 
     selector_links = """
     <div class="actions">
@@ -1847,6 +1854,9 @@ function refreshNow() {{ window.location.reload(); }}
     <div class=\"card\">
       <div class=\"section-title\">Sync / machine status</div>
       <p class=\"small-note\">{html.escape(refresh_text)}</p>
+      <div class=\"tiny\">Latest draw date: {html.escape(str(latest['date']))}</div>
+      <div class=\"tiny\">Payload generated: {html.escape(str(payload_generated_at))}</div>
+      <div class=\"tiny\">Cache used: {html.escape(cache_used_text)}</div>
       <div class=\"tiny\">Last attempt: {html.escape(str(last_attempt_at))}</div>
       <div class=\"tiny\">Last success: {html.escape(str(last_success_at))}</div>
       <div class=\"tiny\">Last success source: {html.escape(str(last_success_source))}</div>
