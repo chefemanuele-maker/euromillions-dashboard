@@ -91,7 +91,7 @@ def euromillions():
         """, 500
 
 
-@app.route("/admin/refresh")
+@app.route("/admin/refresh", methods=["GET", "POST"])
 def admin_refresh():
     if not admin_authorized():
         return jsonify({
