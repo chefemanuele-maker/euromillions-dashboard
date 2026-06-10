@@ -130,7 +130,7 @@ def admin_refresh():
 @app.route("/download/history")
 def download_history():
     try:
-        df = euro.load_local_history()
+        df, _ = euro.load_public_history_snapshot()
         csv_bytes = df.to_csv(index=False).encode("utf-8")
         return send_file(
             io.BytesIO(csv_bytes),
@@ -150,7 +150,7 @@ def download_history():
 @app.route("/download/suggested")
 def download_suggested():
     try:
-        df = euro.load_local_history()
+        df, _ = euro.load_public_history_snapshot()
         data = euro.build_dashboard_data(df, premium_line_count=10)
         suggested_df = euro.suggested_to_dataframe(data["suggested"])
         csv_bytes = suggested_df.to_csv(index=False).encode("utf-8")

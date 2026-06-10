@@ -46,6 +46,9 @@ REFRESH_STATE_FILE = BASE_DIR / "euromillions_refresh_state.json"
 DASHBOARD_CACHE = BASE_DIR / "euromillions_dashboard_payload.json"
 BACKFILL_FETCH_TIMEOUT = int(os.environ.get("EUROMILLIONS_BACKFILL_TIMEOUT", "6"))
 BACKFILL_MAX_DRAWS = int(os.environ.get("EUROMILLIONS_BACKFILL_MAX_DRAWS", "60"))
+QUICK_BACKFILL_MAX_DRAWS = int(os.environ.get("EUROMILLIONS_QUICK_BACKFILL_MAX_DRAWS", "3"))
+QUICK_BACKFILL_LOOKBACK_DAYS = int(os.environ.get("EUROMILLIONS_QUICK_BACKFILL_LOOKBACK_DAYS", "21"))
+CACHE_MAX_AGE_SECONDS = int(os.environ.get("EUROMILLIONS_CACHE_MAX_AGE_SECONDS", str(6 * 60 * 60)))
 
 MAIN_RANGE = list(range(1, 51))
 STAR_RANGE = list(range(1, 13))
@@ -93,6 +96,10 @@ def ensure_base_dir() -> None:
     BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def utc_now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
 def save_json_atomic(path: Path, payload: Dict[str, object]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -118,7 +125,7 @@ def save_refresh_state(
     latest_date: Optional[str],
 ) -> None:
     ensure_base_dir()
-    now = dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    now = utc_now_iso()
     state = load_refresh_state()
 
     state["last_attempt_at"] = now
@@ -641,6 +648,37 @@ def fetch_missing_backfill(df: pd.DataFrame, latest_date: dt.date) -> Tuple[pd.D
     return standardize_columns(pd.DataFrame(rows)), len(rows), errors
 
 
+def fetch_recent_quick_backfill(df: pd.DataFrame, latest_date: dt.date) -> Tuple[pd.DataFrame, int, List[str]]:
+    if QUICK_BACKFILL_MAX_DRAWS <= 0 or df.empty:
+        return pd.DataFrame(), 0, []
+
+    existing = set(pd.to_datetime(df["draw_date"], errors="coerce").dt.date.dropna())
+    start_date = max(existing) if existing else latest_date
+    if latest_date - start_date > dt.timedelta(days=QUICK_BACKFILL_LOOKBACK_DAYS):
+        logger.info(
+            "Skipping quick backfill: gap from local history to official latest is too large | local=%s official=%s",
+            start_date,
+            latest_date,
+        )
+        return pd.DataFrame(), 0, []
+    missing = [d for d in expected_draw_dates(start_date, latest_date) if d not in existing and d != latest_date]
+    if not missing:
+        return pd.DataFrame(), 0, []
+
+    rows: List[Dict[str, object]] = []
+    errors: List[str] = []
+    for draw_date in missing[:QUICK_BACKFILL_MAX_DRAWS]:
+        try:
+            rows.append(fetch_backfill_draw(draw_date, timeout=BACKFILL_FETCH_TIMEOUT))
+        except Exception as exc:
+            logger.warning("Quick backfill skipped for %s | reason=%s", draw_date, exc)
+            errors.append(f"{draw_date}: {exc}")
+
+    if not rows:
+        return pd.DataFrame(), 0, errors
+    return standardize_columns(pd.DataFrame(rows)), len(rows), errors
+
+
 def expected_draw_dates(start: dt.date, end: dt.date) -> List[dt.date]:
     # EuroMillions started weekly on Fridays, then added Tuesdays in May 2011.
     tuesday_start = dt.date(2011, 5, 10)
@@ -694,6 +732,7 @@ def refresh_history(allow_backfill: bool = True, persist: bool = True) -> Tuple[
     sources: List[str] = []
     warnings: List[str] = []
     backfilled = 0
+    quick_backfilled = 0
 
     try:
         official = fetch_official_xml()
@@ -710,7 +749,12 @@ def refresh_history(allow_backfill: bool = True, persist: bool = True) -> Tuple[
                     "Official XML currently exposes only the latest draw; historical backfill was unavailable."
                 )
         elif latest_official:
-            warnings.append("Backfill skipped for public quick refresh.")
+            quick_df, quick_backfilled, quick_errors = fetch_recent_quick_backfill(df, latest_official)
+            if not quick_df.empty:
+                df = dedupe_history(pd.concat([df, quick_df], ignore_index=True))
+                sources.append("national_lottery_com_quick_backfill")
+            if quick_errors and not quick_backfilled:
+                warnings.append("Recent quick backfill was unavailable.")
         df = dedupe_history(pd.concat([df, official], ignore_index=True))
         sources.append("official_xml" if allow_backfill else "official_xml_quick")
     except Exception as xml_exc:
@@ -740,6 +784,8 @@ def refresh_history(allow_backfill: bool = True, persist: bool = True) -> Tuple[
         message = "Refresh complete."
         if backfilled:
             message += f" Backfilled {backfilled} missing draw(s) between local cache and latest official XML draw."
+        if quick_backfilled:
+            message += f" Quick-backfilled {quick_backfilled} recent missing draw(s)."
     else:
         source = "local_cache"
         message = "Official sources unavailable. Using local cache."
@@ -795,7 +841,7 @@ def local_refresh_result(df: pd.DataFrame, message: str = "Loaded local EuroMill
 def save_dashboard_cache(data: Dict[str, object], refresh: RefreshResult, premium_line_count: int = 5) -> None:
     ensure_base_dir()
     payload: Dict[str, object] = {
-        "generated_at": dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "generated_at": utc_now_iso(),
         "premium_line_count": int(premium_line_count),
         "data": data,
         "refresh": refresh_to_dict(refresh),
@@ -839,6 +885,18 @@ def local_history_newer_than_cache(generated_at: object) -> bool:
     return newest_mtime > generated
 
 
+def dashboard_cache_expired(generated_at: object) -> bool:
+    if CACHE_MAX_AGE_SECONDS <= 0:
+        return False
+    generated = parse_utc_timestamp(generated_at)
+    if generated is None:
+        return True
+    if generated.tzinfo is None:
+        generated = generated.replace(tzinfo=dt.timezone.utc)
+    age = dt.datetime.now(dt.timezone.utc) - generated
+    return age.total_seconds() > CACHE_MAX_AGE_SECONDS
+
+
 def load_dashboard_cache(premium_line_count: int = 5) -> Optional[Tuple[Dict[str, object], RefreshResult, str]]:
     if not DASHBOARD_CACHE.exists():
         return None
@@ -854,6 +912,9 @@ def load_dashboard_cache(premium_line_count: int = 5) -> Optional[Tuple[Dict[str
             return None
         if not data.get("target_seed"):
             logger.info("Ignoring stale dashboard cache: missing deterministic target seed")
+            return None
+        if dashboard_cache_expired(generated_at):
+            logger.info("Ignoring stale dashboard cache: generated_at=%s exceeded max age", generated_at)
             return None
 
         local_history_end = latest_local_history_end()
@@ -1506,6 +1567,15 @@ def build_quick_dashboard_payload(premium_line_count: int = 5) -> Tuple[Dict[str
     return data, refresh
 
 
+def load_public_history_snapshot() -> Tuple[pd.DataFrame, RefreshResult]:
+    try:
+        return refresh_history(allow_backfill=False, persist=False)
+    except Exception:
+        logger.exception("Public history snapshot refresh failed; using local CSV history")
+        df = load_local_history()
+        return df, local_refresh_result(df, "Loaded local CSV history after quick refresh was unavailable.")
+
+
 def build_dashboard_payload(premium_line_count: int = 5, allow_refresh: bool = False) -> Dict[str, object]:
     if not allow_refresh:
         cached = load_dashboard_cache(premium_line_count=premium_line_count)
@@ -1521,17 +1591,18 @@ def build_dashboard_payload(premium_line_count: int = 5, allow_refresh: bool = F
     if allow_refresh:
         data, refresh = build_and_store_dashboard_cache(premium_line_count=premium_line_count)
         cache_used = False
-        generated_at = dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+        generated_at = utc_now_iso()
     else:
         try:
-            data, refresh = build_quick_dashboard_payload(premium_line_count=premium_line_count)
+            df, refresh = load_public_history_snapshot()
+            data = build_dashboard_data(df, premium_line_count=premium_line_count)
         except Exception:
             logger.exception("Quick dashboard refresh failed; using local CSV history")
             df = load_local_history()
             refresh = local_refresh_result(df, "Loaded local CSV history after quick refresh was unavailable.")
             data = build_dashboard_data(df, premium_line_count=premium_line_count)
         cache_used = False
-        generated_at = dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+        generated_at = utc_now_iso()
 
     return {
         "data": data,

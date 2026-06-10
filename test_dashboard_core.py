@@ -1,4 +1,5 @@
 import math
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -141,6 +142,38 @@ class EuroMillionsCoreTests(unittest.TestCase):
             self.assertTrue(quality["ok"])
             self.assertEqual(quality["missing_recent_count"], 0)
 
+    def test_stale_dashboard_cache_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = Path(tmp)
+            baseline = Path(__file__).with_name("euromillions_export_2026-06-02.csv")
+            temp_baseline = temp_dir / baseline.name
+            temp_baseline.write_bytes(baseline.read_bytes())
+
+            cache_file = temp_dir / "euromillions_dashboard_payload.json"
+            euro.LOCAL_HISTORY = app_module.euro.LOCAL_HISTORY = temp_dir / "euromillions_history_live.csv"
+            euro.BASELINE_HISTORY = app_module.euro.BASELINE_HISTORY = temp_baseline
+            euro.USER_ORIGINAL = app_module.euro.USER_ORIGINAL = temp_dir / "euromillions_export_2026-03-16.csv"
+            euro.REFRESH_STATE_FILE = app_module.euro.REFRESH_STATE_FILE = temp_dir / "euromillions_refresh_state.json"
+            euro.DASHBOARD_CACHE = app_module.euro.DASHBOARD_CACHE = cache_file
+
+            cache_file.write_text(json.dumps({
+                "generated_at": "2026-01-01T00:00:00Z",
+                "premium_line_count": 5,
+                "data": {
+                    "target_seed": "old-cache",
+                    "history_end": "2026-06-02",
+                },
+                "refresh": {
+                    "source": "local_cache",
+                    "ok": True,
+                    "message": "old cache",
+                    "draws_added": 0,
+                    "latest_date": "2026-06-02",
+                },
+            }), encoding="utf-8")
+
+            self.assertIsNone(euro.load_dashboard_cache(premium_line_count=5))
+
     def test_public_routes_skip_backfill_when_cache_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             official = self.configure_temp_runtime(Path(tmp))
@@ -156,6 +189,109 @@ class EuroMillionsCoreTests(unittest.TestCase):
             self.assertEqual(dashboard.status_code, 200)
             self.assertEqual(suggested.status_code, 200)
             self.assertEqual(suggested.get_json()["refresh"]["source"], "official_xml_quick")
+
+    def test_public_quick_refresh_repairs_recent_missing_draw(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = Path(tmp)
+            baseline = Path(__file__).with_name("euromillions_export_2026-06-02.csv")
+            temp_baseline = temp_dir / baseline.name
+            temp_baseline.write_bytes(baseline.read_bytes())
+
+            euro.LOCAL_HISTORY = app_module.euro.LOCAL_HISTORY = temp_dir / "euromillions_history_live.csv"
+            euro.BASELINE_HISTORY = app_module.euro.BASELINE_HISTORY = temp_baseline
+            euro.USER_ORIGINAL = app_module.euro.USER_ORIGINAL = temp_dir / "euromillions_export_2026-03-16.csv"
+            euro.REFRESH_STATE_FILE = app_module.euro.REFRESH_STATE_FILE = temp_dir / "euromillions_refresh_state.json"
+            euro.DASHBOARD_CACHE = app_module.euro.DASHBOARD_CACHE = temp_dir / "euromillions_dashboard_payload.json"
+
+            official = euro.standardize_columns(pd.DataFrame([{
+                "draw_date": "2026-06-09",
+                "draw_number": "1953",
+                "ball_1": 2,
+                "ball_2": 7,
+                "ball_3": 23,
+                "ball_4": 44,
+                "ball_5": 46,
+                "lucky_star_1": 3,
+                "lucky_star_2": 5,
+                "source": "official_xml",
+            }]))
+            missing_draw = {
+                "draw_date": "2026-06-05",
+                "draw_number": "1952",
+                "ball_1": 5,
+                "ball_2": 6,
+                "ball_3": 16,
+                "ball_4": 17,
+                "ball_5": 49,
+                "lucky_star_1": 2,
+                "lucky_star_2": 12,
+                "source": "national_lottery_com_backfill",
+            }
+
+            with (
+                mock.patch.object(euro, "fetch_official_xml", return_value=official),
+                mock.patch.object(euro, "fetch_backfill_draw", return_value=missing_draw) as quick_backfill,
+                mock.patch.object(euro, "fetch_missing_backfill") as full_backfill,
+            ):
+                payload = euro.build_dashboard_payload(premium_line_count=5)
+
+            full_backfill.assert_not_called()
+            quick_backfill.assert_called_once()
+            self.assertIn("national_lottery_com_quick_backfill", payload["refresh"]["source"])
+            self.assertTrue(payload["data"]["quality"]["ok"])
+            self.assertEqual(payload["data"]["history_end"], "2026-06-09")
+
+    def test_public_downloads_use_quick_history_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = Path(tmp)
+            baseline = Path(__file__).with_name("euromillions_export_2026-06-02.csv")
+            temp_baseline = temp_dir / baseline.name
+            temp_baseline.write_bytes(baseline.read_bytes())
+
+            euro.LOCAL_HISTORY = app_module.euro.LOCAL_HISTORY = temp_dir / "euromillions_history_live.csv"
+            euro.BASELINE_HISTORY = app_module.euro.BASELINE_HISTORY = temp_baseline
+            euro.USER_ORIGINAL = app_module.euro.USER_ORIGINAL = temp_dir / "euromillions_export_2026-03-16.csv"
+            euro.REFRESH_STATE_FILE = app_module.euro.REFRESH_STATE_FILE = temp_dir / "euromillions_refresh_state.json"
+            euro.DASHBOARD_CACHE = app_module.euro.DASHBOARD_CACHE = temp_dir / "euromillions_dashboard_payload.json"
+
+            official = euro.standardize_columns(pd.DataFrame([{
+                "draw_date": "2026-06-09",
+                "draw_number": "1953",
+                "ball_1": 2,
+                "ball_2": 7,
+                "ball_3": 23,
+                "ball_4": 44,
+                "ball_5": 46,
+                "lucky_star_1": 3,
+                "lucky_star_2": 5,
+                "source": "official_xml",
+            }]))
+            missing_draw = {
+                "draw_date": "2026-06-05",
+                "draw_number": "1952",
+                "ball_1": 5,
+                "ball_2": 6,
+                "ball_3": 16,
+                "ball_4": 17,
+                "ball_5": 49,
+                "lucky_star_1": 2,
+                "lucky_star_2": 12,
+                "source": "national_lottery_com_backfill",
+            }
+
+            with (
+                mock.patch.object(euro, "fetch_official_xml", return_value=official),
+                mock.patch.object(euro, "fetch_backfill_draw", return_value=missing_draw),
+            ):
+                client = app_module.app.test_client()
+                history = client.get("/download/history")
+                suggested = client.get("/download/suggested")
+
+            self.assertEqual(history.status_code, 200)
+            self.assertIn(b"2026-06-05", history.data)
+            self.assertIn(b"2026-06-09", history.data)
+            self.assertEqual(suggested.status_code, 200)
+            self.assertIn(b"balls,stars", suggested.data.splitlines()[0])
 
     def test_admin_refresh_supports_get_post_and_can_backfill(self):
         with tempfile.TemporaryDirectory() as tmp:
