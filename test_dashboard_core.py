@@ -63,6 +63,12 @@ class EuroMillionsCoreTests(unittest.TestCase):
         euro.DASHBOARD_CACHE = app_module.euro.DASHBOARD_CACHE = cache_file
         return official
 
+    def write_baseline_through(self, output: Path, end_date: str) -> None:
+        baseline = Path(__file__).with_name("euromillions_export_2026-06-02.csv")
+        df = pd.read_csv(baseline)
+        df = df[pd.to_datetime(df["draw_date"]).dt.date <= pd.to_datetime(end_date).date()]
+        df.to_csv(output, index=False)
+
     def test_total_combinations_is_exact(self):
         self.assertEqual(euro.TOTAL_COMBINATIONS, math.comb(50, 5) * math.comb(12, 2))
         self.assertEqual(euro.TOTAL_COMBINATIONS, 139_838_160)
@@ -137,8 +143,8 @@ class EuroMillionsCoreTests(unittest.TestCase):
             df = euro.load_local_history()
             quality = euro.history_quality_report(df)
 
-            self.assertEqual(len(df), 1951)
-            self.assertEqual(str(pd.to_datetime(df["draw_date"]).dt.date.max()), "2026-06-02")
+            self.assertEqual(len(df), 1953)
+            self.assertEqual(str(pd.to_datetime(df["draw_date"]).dt.date.max()), "2026-06-09")
             self.assertTrue(quality["ok"])
             self.assertEqual(quality["missing_recent_count"], 0)
 
@@ -147,7 +153,7 @@ class EuroMillionsCoreTests(unittest.TestCase):
             temp_dir = Path(tmp)
             baseline = Path(__file__).with_name("euromillions_export_2026-06-02.csv")
             temp_baseline = temp_dir / baseline.name
-            temp_baseline.write_bytes(baseline.read_bytes())
+            self.write_baseline_through(temp_baseline, "2026-06-02")
 
             cache_file = temp_dir / "euromillions_dashboard_payload.json"
             euro.LOCAL_HISTORY = app_module.euro.LOCAL_HISTORY = temp_dir / "euromillions_history_live.csv"
@@ -195,7 +201,7 @@ class EuroMillionsCoreTests(unittest.TestCase):
             temp_dir = Path(tmp)
             baseline = Path(__file__).with_name("euromillions_export_2026-06-02.csv")
             temp_baseline = temp_dir / baseline.name
-            temp_baseline.write_bytes(baseline.read_bytes())
+            self.write_baseline_through(temp_baseline, "2026-06-02")
 
             euro.LOCAL_HISTORY = app_module.euro.LOCAL_HISTORY = temp_dir / "euromillions_history_live.csv"
             euro.BASELINE_HISTORY = app_module.euro.BASELINE_HISTORY = temp_baseline
@@ -246,7 +252,7 @@ class EuroMillionsCoreTests(unittest.TestCase):
             temp_dir = Path(tmp)
             baseline = Path(__file__).with_name("euromillions_export_2026-06-02.csv")
             temp_baseline = temp_dir / baseline.name
-            temp_baseline.write_bytes(baseline.read_bytes())
+            self.write_baseline_through(temp_baseline, "2026-06-02")
 
             euro.LOCAL_HISTORY = app_module.euro.LOCAL_HISTORY = temp_dir / "euromillions_history_live.csv"
             euro.BASELINE_HISTORY = app_module.euro.BASELINE_HISTORY = temp_baseline
