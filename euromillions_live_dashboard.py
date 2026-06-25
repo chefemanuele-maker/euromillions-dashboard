@@ -1554,6 +1554,39 @@ def build_and_store_dashboard_cache(premium_line_count: int = 5) -> Tuple[Dict[s
     return data, refresh
 
 
+def build_and_store_latest_official_cache(premium_line_count: int = 5) -> Tuple[Dict[str, object], RefreshResult]:
+    df = load_local_history()
+    before = len(df)
+    try:
+        official = fetch_official_xml(timeout=12)
+        if official.empty:
+            raise ValueError("Official XML returned no valid draws.")
+        df = dedupe_history(pd.concat([df, official], ignore_index=True))
+        persist_history(df)
+        latest_date = str(df["draw_date"].max()) if not df.empty else None
+        refresh = RefreshResult(
+            source="official_xml_latest",
+            ok=bool(history_quality_report(df).get("ok", False)),
+            message="Latest official draw refresh complete.",
+            draws_added=max(0, len(df) - before),
+            latest_date=latest_date,
+        )
+    except Exception as exc:
+        logger.exception("Latest official refresh failed; keeping local history")
+        refresh = local_refresh_result(df, f"Latest official refresh failed. Using local history. Reason: {exc}")
+
+    save_refresh_state(
+        ok=refresh.ok,
+        source=refresh.source,
+        message=refresh.message,
+        draws_added=refresh.draws_added,
+        latest_date=refresh.latest_date,
+    )
+    data = build_dashboard_data(df, premium_line_count=premium_line_count)
+    save_dashboard_cache(data, refresh, premium_line_count=premium_line_count)
+    return data, refresh
+
+
 def build_quick_dashboard_payload(premium_line_count: int = 5) -> Tuple[Dict[str, object], RefreshResult]:
     df, refresh = refresh_history(allow_backfill=False, persist=False)
     data = build_dashboard_data(df, premium_line_count=premium_line_count)
@@ -2110,7 +2143,7 @@ try:
                             "latest_date": state.get("latest_date"),
                         })
 
-            data, refresh = build_and_store_dashboard_cache()
+            data, refresh = build_and_store_latest_official_cache()
             df = load_local_history()
             return jsonify({
                 "ok": refresh.ok,

@@ -164,7 +164,7 @@ def cron_refresh():
             "latest_date": state.get("latest_date"),
         })
     try:
-        data, refresh = euro.build_and_store_dashboard_cache()
+        data, refresh = euro.build_and_store_latest_official_cache()
         df = euro.load_local_history()
         return jsonify({
             "ok": refresh.ok,

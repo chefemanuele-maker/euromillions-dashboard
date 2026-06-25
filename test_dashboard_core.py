@@ -144,8 +144,8 @@ class EuroMillionsCoreTests(unittest.TestCase):
             df = euro.load_local_history()
             quality = euro.history_quality_report(df)
 
-            self.assertEqual(len(df), 1953)
-            self.assertEqual(str(pd.to_datetime(df["draw_date"]).dt.date.max()), "2026-06-09")
+            self.assertEqual(len(df), 1957)
+            self.assertEqual(str(pd.to_datetime(df["draw_date"]).dt.date.max()), "2026-06-23")
             self.assertTrue(quality["ok"])
             self.assertEqual(quality["missing_recent_count"], 0)
 
@@ -351,7 +351,7 @@ class EuroMillionsCoreTests(unittest.TestCase):
                 "ALLOW_PUBLIC_CRON_REFRESH": "1",
                 "CRON_REFRESH_MIN_INTERVAL_SECONDS": "0",
             }),
-            mock.patch.object(euro, "build_and_store_dashboard_cache", return_value=({"history_rows": 1}, refresh)) as builder,
+            mock.patch.object(euro, "build_and_store_latest_official_cache", return_value=({"history_rows": 1}, refresh)) as builder,
             mock.patch.object(euro, "load_local_history", return_value=df),
         ):
             response = client.get("/cron/refresh")
