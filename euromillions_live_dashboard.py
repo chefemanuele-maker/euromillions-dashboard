@@ -2089,5 +2089,46 @@ try:
         except Exception:
             logger.exception("Legacy Render API failed")
             return jsonify({"ok": False, "error": "dashboard_unavailable"}), 500
+
+    @app.route("/cron/refresh", methods=["GET", "POST"])
+    def flask_cron_refresh():
+        try:
+            min_interval = int(os.environ.get("CRON_REFRESH_MIN_INTERVAL_SECONDS", "1200"))
+            if min_interval > 0:
+                state = load_refresh_state()
+                last_attempt = parse_utc_timestamp(state.get("last_attempt_at"))
+                if last_attempt is not None:
+                    if last_attempt.tzinfo is None:
+                        last_attempt = last_attempt.replace(tzinfo=dt.timezone.utc)
+                    age = dt.datetime.now(dt.timezone.utc) - last_attempt
+                    if age.total_seconds() < min_interval:
+                        return jsonify({
+                            "ok": True,
+                            "skipped": True,
+                            "message": "Refresh skipped because the previous attempt was recent.",
+                            "last_attempt_at": state.get("last_attempt_at"),
+                            "latest_date": state.get("latest_date"),
+                        })
+
+            data, refresh = build_and_store_dashboard_cache()
+            df = load_local_history()
+            return jsonify({
+                "ok": refresh.ok,
+                "skipped": False,
+                "source": refresh.source,
+                "message": refresh.message,
+                "draws_added": refresh.draws_added,
+                "latest_date": refresh.latest_date,
+                "rows": len(df),
+                "cache_history_rows": data.get("history_rows"),
+                "quality": history_quality_report(df),
+            })
+        except Exception:
+            logger.exception("Legacy Render cron refresh failed")
+            return jsonify({
+                "ok": False,
+                "error": "cron_refresh_failed",
+                "message": "The cron refresh failed. Check server logs for details.",
+            }), 500
 except Exception:
     app = None
