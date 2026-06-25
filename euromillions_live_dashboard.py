@@ -897,7 +897,10 @@ def dashboard_cache_expired(generated_at: object) -> bool:
     return age.total_seconds() > CACHE_MAX_AGE_SECONDS
 
 
-def load_dashboard_cache(premium_line_count: int = 5) -> Optional[Tuple[Dict[str, object], RefreshResult, str]]:
+def load_dashboard_cache(
+    premium_line_count: int = 5,
+    allow_stale: bool = False,
+) -> Optional[Tuple[Dict[str, object], RefreshResult, str]]:
     if not DASHBOARD_CACHE.exists():
         return None
     try:
@@ -913,7 +916,7 @@ def load_dashboard_cache(premium_line_count: int = 5) -> Optional[Tuple[Dict[str
         if not data.get("target_seed"):
             logger.info("Ignoring stale dashboard cache: missing deterministic target seed")
             return None
-        if dashboard_cache_expired(generated_at):
+        if not allow_stale and dashboard_cache_expired(generated_at):
             logger.info("Ignoring stale dashboard cache: generated_at=%s exceeded max age", generated_at)
             return None
 
@@ -927,7 +930,7 @@ def load_dashboard_cache(premium_line_count: int = 5) -> Optional[Tuple[Dict[str
             )
             return None
 
-        if local_history_newer_than_cache(generated_at):
+        if not allow_stale and local_history_newer_than_cache(generated_at):
             logger.info("Ignoring stale dashboard cache: local history file is newer than cache")
             return None
 
@@ -1569,16 +1572,22 @@ def build_quick_dashboard_payload(premium_line_count: int = 5) -> Tuple[Dict[str
 
 def load_public_history_snapshot() -> Tuple[pd.DataFrame, RefreshResult]:
     try:
-        return refresh_history(allow_backfill=False, persist=False)
-    except Exception:
-        logger.exception("Public history snapshot refresh failed; using local CSV history")
         df = load_local_history()
-        return df, local_refresh_result(df, "Loaded local CSV history after quick refresh was unavailable.")
+        return df, local_refresh_result(
+            df,
+            "Loaded local CSV history. Online refresh runs outside public requests.",
+        )
+    except Exception:
+        logger.exception("Public history snapshot load failed; using local CSV history")
+        df = load_local_history()
+        return df, local_refresh_result(df, "Loaded local CSV history after public snapshot failed.")
 
 
 def build_dashboard_payload(premium_line_count: int = 5, allow_refresh: bool = False) -> Dict[str, object]:
     if not allow_refresh:
         cached = load_dashboard_cache(premium_line_count=premium_line_count)
+        if cached is None:
+            cached = load_dashboard_cache(premium_line_count=premium_line_count, allow_stale=True)
         if cached is not None:
             data, refresh, generated_at = cached
             return {

@@ -114,18 +114,19 @@ class EuroMillionsCoreTests(unittest.TestCase):
             self.assertTrue(all(1 <= n <= 12 for n in stars))
         self.assertLessEqual(euro.line_pack_diversity_report(pack)["max_pair_overlap"], 3)
 
-    def test_public_dashboard_payload_skips_backfill_when_cache_missing(self):
+    def test_public_dashboard_payload_uses_local_history_without_online_fetch(self):
         with tempfile.TemporaryDirectory() as tmp:
-            official = self.configure_temp_runtime(Path(tmp))
+            self.configure_temp_runtime(Path(tmp))
             with (
-                mock.patch.object(euro, "fetch_official_xml", return_value=official),
+                mock.patch.object(euro, "fetch_official_xml", side_effect=AssertionError("public payload must not fetch online")) as official,
                 mock.patch.object(euro, "fetch_missing_backfill") as backfill,
             ):
                 payload = euro.build_dashboard_payload(premium_line_count=5)
 
+            official.assert_not_called()
             backfill.assert_not_called()
             self.assertFalse(payload["cache_used"])
-            self.assertEqual(payload["refresh"]["source"], "official_xml_quick")
+            self.assertEqual(payload["refresh"]["source"], "local_cache")
 
     def test_cold_deploy_baseline_has_complete_recent_history(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -180,23 +181,24 @@ class EuroMillionsCoreTests(unittest.TestCase):
 
             self.assertIsNone(euro.load_dashboard_cache(premium_line_count=5))
 
-    def test_public_routes_skip_backfill_when_cache_missing(self):
+    def test_public_routes_do_not_fetch_online_when_cache_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            official = self.configure_temp_runtime(Path(tmp))
+            self.configure_temp_runtime(Path(tmp))
             with (
-                mock.patch.object(euro, "fetch_official_xml", return_value=official),
+                mock.patch.object(euro, "fetch_official_xml", side_effect=AssertionError("public route must not fetch online")) as official,
                 mock.patch.object(euro, "fetch_missing_backfill") as backfill,
             ):
                 client = app_module.app.test_client()
                 dashboard = client.get("/euromillions")
                 suggested = client.get("/api/suggested?lines=5")
 
+            official.assert_not_called()
             backfill.assert_not_called()
             self.assertEqual(dashboard.status_code, 200)
             self.assertEqual(suggested.status_code, 200)
-            self.assertEqual(suggested.get_json()["refresh"]["source"], "official_xml_quick")
+            self.assertEqual(suggested.get_json()["refresh"]["source"], "local_cache")
 
-    def test_public_quick_refresh_repairs_recent_missing_draw(self):
+    def test_public_payload_does_not_quick_backfill_recent_missing_draw(self):
         with tempfile.TemporaryDirectory() as tmp:
             temp_dir = Path(tmp)
             baseline = Path(__file__).with_name("euromillions_export_2026-06-02.csv")
@@ -235,19 +237,19 @@ class EuroMillionsCoreTests(unittest.TestCase):
             }
 
             with (
-                mock.patch.object(euro, "fetch_official_xml", return_value=official),
+                mock.patch.object(euro, "fetch_official_xml", side_effect=AssertionError("public payload must not fetch online")) as official_fetch,
                 mock.patch.object(euro, "fetch_backfill_draw", return_value=missing_draw) as quick_backfill,
                 mock.patch.object(euro, "fetch_missing_backfill") as full_backfill,
             ):
                 payload = euro.build_dashboard_payload(premium_line_count=5)
 
+            official_fetch.assert_not_called()
             full_backfill.assert_not_called()
-            quick_backfill.assert_called_once()
-            self.assertIn("national_lottery_com_quick_backfill", payload["refresh"]["source"])
-            self.assertTrue(payload["data"]["quality"]["ok"])
-            self.assertEqual(payload["data"]["history_end"], "2026-06-09")
+            quick_backfill.assert_not_called()
+            self.assertEqual(payload["refresh"]["source"], "local_cache")
+            self.assertEqual(payload["data"]["history_end"], "2026-06-02")
 
-    def test_public_downloads_use_quick_history_snapshot(self):
+    def test_public_downloads_use_local_history_without_online_fetch(self):
         with tempfile.TemporaryDirectory() as tmp:
             temp_dir = Path(tmp)
             baseline = Path(__file__).with_name("euromillions_export_2026-06-02.csv")
@@ -286,16 +288,19 @@ class EuroMillionsCoreTests(unittest.TestCase):
             }
 
             with (
-                mock.patch.object(euro, "fetch_official_xml", return_value=official),
-                mock.patch.object(euro, "fetch_backfill_draw", return_value=missing_draw),
+                mock.patch.object(euro, "fetch_official_xml", side_effect=AssertionError("download route must not fetch online")) as official_fetch,
+                mock.patch.object(euro, "fetch_backfill_draw", return_value=missing_draw) as quick_backfill,
             ):
                 client = app_module.app.test_client()
                 history = client.get("/download/history")
                 suggested = client.get("/download/suggested")
 
+            official_fetch.assert_not_called()
+            quick_backfill.assert_not_called()
             self.assertEqual(history.status_code, 200)
-            self.assertIn(b"2026-06-05", history.data)
-            self.assertIn(b"2026-06-09", history.data)
+            self.assertIn(b"2026-06-02", history.data)
+            self.assertNotIn(b"2026-06-05", history.data)
+            self.assertNotIn(b"2026-06-09", history.data)
             self.assertEqual(suggested.status_code, 200)
             self.assertIn(b"balls,stars", suggested.data.splitlines()[0])
 
