@@ -920,17 +920,7 @@ def load_dashboard_cache(
             logger.info("Ignoring stale dashboard cache: generated_at=%s exceeded max age", generated_at)
             return None
 
-        local_history_end = latest_local_history_end()
-        cached_history_end = data.get("history_end")
-        if local_history_end and cached_history_end != local_history_end:
-            logger.info(
-                "Ignoring stale dashboard cache: cached history_end=%s local history_end=%s",
-                cached_history_end,
-                local_history_end,
-            )
-            return None
-
-        if not allow_stale and local_history_newer_than_cache(generated_at):
+        if local_history_newer_than_cache(generated_at):
             logger.info("Ignoring stale dashboard cache: local history file is newer than cache")
             return None
 
@@ -1605,11 +1595,13 @@ def build_dashboard_payload(premium_line_count: int = 5, allow_refresh: bool = F
         try:
             df, refresh = load_public_history_snapshot()
             data = build_dashboard_data(df, premium_line_count=premium_line_count)
+            save_dashboard_cache(data, refresh, premium_line_count=premium_line_count)
         except Exception:
             logger.exception("Quick dashboard refresh failed; using local CSV history")
             df = load_local_history()
             refresh = local_refresh_result(df, "Loaded local CSV history after quick refresh was unavailable.")
             data = build_dashboard_data(df, premium_line_count=premium_line_count)
+            save_dashboard_cache(data, refresh, premium_line_count=premium_line_count)
         cache_used = False
         generated_at = utc_now_iso()
 
