@@ -6,14 +6,19 @@ import requests
 
 
 def main() -> int:
-    base_url = os.environ.get("EUROMILLIONS_DASHBOARD_URL", "").strip().rstrip("/")
+    base_url = os.environ.get(
+        "EUROMILLIONS_DASHBOARD_URL",
+        "https://euromillions-dashboard.onrender.com",
+    ).strip().rstrip("/")
     token = os.environ.get("ADMIN_REFRESH_TOKEN", "").strip()
-    if not base_url or not token:
-        print("Missing EUROMILLIONS_DASHBOARD_URL or ADMIN_REFRESH_TOKEN.", file=sys.stderr)
+    if not base_url:
+        print("Missing EUROMILLIONS_DASHBOARD_URL.", file=sys.stderr)
         return 2
 
-    url = f"{base_url}/admin/refresh"
-    response = requests.get(url, headers={"X-Admin-Token": token}, timeout=120)
+    endpoint = "admin/refresh" if token else "cron/refresh"
+    headers = {"X-Admin-Token": token} if token else {}
+    url = f"{base_url}/{endpoint}"
+    response = requests.get(url, headers=headers, timeout=120)
     print(f"admin refresh status={response.status_code}")
     print(response.text[:2000])
     response.raise_for_status()

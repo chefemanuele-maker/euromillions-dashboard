@@ -1,5 +1,6 @@
 import os
 import io
+import datetime as dt
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, send_file, request
@@ -24,6 +25,24 @@ def admin_authorized() -> bool:
         return False
     supplied = request.args.get("token") or request.headers.get("X-Admin-Token") or ""
     return supplied == token
+
+
+def public_cron_refresh_allowed() -> bool:
+    return os.environ.get("ALLOW_PUBLIC_CRON_REFRESH", "1").strip().lower() not in {"0", "false", "no"}
+
+
+def cron_refresh_too_soon() -> bool:
+    min_interval = int(os.environ.get("CRON_REFRESH_MIN_INTERVAL_SECONDS", "1200"))
+    if min_interval <= 0:
+        return False
+    state = euro.load_refresh_state()
+    last_attempt = euro.parse_utc_timestamp(state.get("last_attempt_at"))
+    if last_attempt is None:
+        return False
+    if last_attempt.tzinfo is None:
+        last_attempt = last_attempt.replace(tzinfo=dt.timezone.utc)
+    age = dt.datetime.now(dt.timezone.utc) - last_attempt
+    return age.total_seconds() < min_interval
 
 
 @app.route("/")
@@ -124,6 +143,46 @@ def admin_refresh():
             "ok": False,
             "error": "admin_refresh_failed",
             "message": "The refresh job failed. Check server logs for details."
+        }), 500
+
+
+@app.route("/cron/refresh", methods=["GET", "POST"])
+def cron_refresh():
+    if not admin_authorized() and not public_cron_refresh_allowed():
+        return jsonify({
+            "ok": False,
+            "error": "cron_refresh_locked",
+            "message": "Set ADMIN_REFRESH_TOKEN or ALLOW_PUBLIC_CRON_REFRESH=1."
+        }), 403
+    if cron_refresh_too_soon():
+        state = euro.load_refresh_state()
+        return jsonify({
+            "ok": True,
+            "skipped": True,
+            "message": "Refresh skipped because the previous attempt was recent.",
+            "last_attempt_at": state.get("last_attempt_at"),
+            "latest_date": state.get("latest_date"),
+        })
+    try:
+        data, refresh = euro.build_and_store_dashboard_cache()
+        df = euro.load_local_history()
+        return jsonify({
+            "ok": refresh.ok,
+            "skipped": False,
+            "source": refresh.source,
+            "message": refresh.message,
+            "draws_added": refresh.draws_added,
+            "latest_date": refresh.latest_date,
+            "rows": len(df),
+            "cache_history_rows": data.get("history_rows"),
+            "quality": euro.history_quality_report(df),
+        })
+    except Exception:
+        app.logger.exception("Cron refresh failed")
+        return jsonify({
+            "ok": False,
+            "error": "cron_refresh_failed",
+            "message": "The cron refresh failed. Check server logs for details."
         }), 500
 
 

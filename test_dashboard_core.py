@@ -325,6 +325,42 @@ class EuroMillionsCoreTests(unittest.TestCase):
             self.assertEqual(post_response.status_code, 200)
             self.assertGreaterEqual(backfill.call_count, 2)
 
+    def test_cron_refresh_can_run_without_admin_token_when_public_cron_allowed(self):
+        app_module.app.config["TESTING"] = True
+        client = app_module.app.test_client()
+        df = pd.DataFrame([{
+            "draw_date": "2026-06-09",
+            "ball_1": 1,
+            "ball_2": 2,
+            "ball_3": 3,
+            "ball_4": 4,
+            "ball_5": 5,
+            "lucky_star_1": 1,
+            "lucky_star_2": 2,
+        }])
+        refresh = euro.RefreshResult(
+            source="official_xml",
+            ok=True,
+            message="Refresh complete.",
+            draws_added=1,
+            latest_date="2026-06-09",
+        )
+
+        with (
+            mock.patch.dict("os.environ", {
+                "ALLOW_PUBLIC_CRON_REFRESH": "1",
+                "CRON_REFRESH_MIN_INTERVAL_SECONDS": "0",
+            }),
+            mock.patch.object(euro, "build_and_store_dashboard_cache", return_value=({"history_rows": 1}, refresh)) as builder,
+            mock.patch.object(euro, "load_local_history", return_value=df),
+        ):
+            response = client.get("/cron/refresh")
+
+        builder.assert_called_once()
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.get_json()["skipped"])
+        self.assertEqual(response.get_json()["latest_date"], "2026-06-09")
+
 
 if __name__ == "__main__":
     unittest.main()
