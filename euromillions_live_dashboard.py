@@ -48,6 +48,7 @@ BACKFILL_FETCH_TIMEOUT = int(os.environ.get("EUROMILLIONS_BACKFILL_TIMEOUT", "15
 BACKFILL_MAX_DRAWS = int(os.environ.get("EUROMILLIONS_BACKFILL_MAX_DRAWS", "60"))
 QUICK_BACKFILL_MAX_DRAWS = int(os.environ.get("EUROMILLIONS_QUICK_BACKFILL_MAX_DRAWS", "3"))
 QUICK_BACKFILL_LOOKBACK_DAYS = int(os.environ.get("EUROMILLIONS_QUICK_BACKFILL_LOOKBACK_DAYS", "21"))
+QUICK_BACKFILL_FETCH_TIMEOUT = int(os.environ.get("EUROMILLIONS_QUICK_BACKFILL_TIMEOUT", "6"))
 CACHE_MAX_AGE_SECONDS = int(os.environ.get("EUROMILLIONS_CACHE_MAX_AGE_SECONDS", str(6 * 60 * 60)))
 PUBLIC_AUTO_REFRESH_MIN_INTERVAL_SECONDS = int(os.environ.get("EUROMILLIONS_PUBLIC_AUTO_REFRESH_MIN_INTERVAL_SECONDS", "1200"))
 
@@ -670,7 +671,7 @@ def fetch_recent_quick_backfill(df: pd.DataFrame, latest_date: dt.date) -> Tuple
     errors: List[str] = []
     for draw_date in missing[:QUICK_BACKFILL_MAX_DRAWS]:
         try:
-            rows.append(fetch_backfill_draw(draw_date, timeout=BACKFILL_FETCH_TIMEOUT))
+            rows.append(fetch_backfill_draw(draw_date, timeout=QUICK_BACKFILL_FETCH_TIMEOUT))
         except Exception as exc:
             logger.warning("Quick backfill skipped for %s | reason=%s", draw_date, exc)
             errors.append(f"{draw_date}: {exc}")

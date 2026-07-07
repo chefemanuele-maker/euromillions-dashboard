@@ -145,8 +145,8 @@ class EuroMillionsCoreTests(unittest.TestCase):
             df = euro.load_local_history()
             quality = euro.history_quality_report(df)
 
-            self.assertEqual(len(df), 1957)
-            self.assertEqual(str(pd.to_datetime(df["draw_date"]).dt.date.max()), "2026-06-23")
+            self.assertEqual(len(df), 1960)
+            self.assertEqual(str(pd.to_datetime(df["draw_date"]).dt.date.max()), "2026-07-03")
             self.assertTrue(quality["ok"])
             self.assertEqual(quality["missing_recent_count"], 0)
 
