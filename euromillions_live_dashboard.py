@@ -49,6 +49,7 @@ BACKFILL_MAX_DRAWS = int(os.environ.get("EUROMILLIONS_BACKFILL_MAX_DRAWS", "60")
 QUICK_BACKFILL_MAX_DRAWS = int(os.environ.get("EUROMILLIONS_QUICK_BACKFILL_MAX_DRAWS", "3"))
 QUICK_BACKFILL_LOOKBACK_DAYS = int(os.environ.get("EUROMILLIONS_QUICK_BACKFILL_LOOKBACK_DAYS", "21"))
 CACHE_MAX_AGE_SECONDS = int(os.environ.get("EUROMILLIONS_CACHE_MAX_AGE_SECONDS", str(6 * 60 * 60)))
+PUBLIC_AUTO_REFRESH_MIN_INTERVAL_SECONDS = int(os.environ.get("EUROMILLIONS_PUBLIC_AUTO_REFRESH_MIN_INTERVAL_SECONDS", "1200"))
 
 MAIN_RANGE = list(range(1, 51))
 STAR_RANGE = list(range(1, 13))
@@ -1557,17 +1558,37 @@ def build_and_store_dashboard_cache(premium_line_count: int = 5) -> Tuple[Dict[s
 def build_and_store_latest_official_cache(premium_line_count: int = 5) -> Tuple[Dict[str, object], RefreshResult]:
     df = load_local_history()
     before = len(df)
+    sources: List[str] = []
+    warnings: List[str] = []
+    quick_backfilled = 0
     try:
         official = fetch_official_xml(timeout=12)
         if official.empty:
             raise ValueError("Official XML returned no valid draws.")
+        latest_official = pd.to_datetime(official["draw_date"], errors="coerce").dt.date.max()
+        if latest_official:
+            quick_df, quick_backfilled, quick_errors = fetch_recent_quick_backfill(df, latest_official)
+            if not quick_df.empty:
+                df = dedupe_history(pd.concat([df, quick_df], ignore_index=True))
+                sources.append("national_lottery_com_quick_backfill")
+            if quick_errors and not quick_backfilled:
+                warnings.append("Recent quick backfill was unavailable.")
         df = dedupe_history(pd.concat([df, official], ignore_index=True))
+        sources.append("official_xml_latest")
         persist_history(df)
         latest_date = str(df["draw_date"].max()) if not df.empty else None
+        quality = history_quality_report(df)
+        message = "Latest official draw refresh complete."
+        if quick_backfilled:
+            message += f" Quick-backfilled {quick_backfilled} recent missing draw(s)."
+        if warnings:
+            message += " Warnings: " + " | ".join(warnings[:2])
+        if not quality.get("ok", False):
+            message += " Data quality warning: " + " ".join(str(x) for x in quality.get("notes", []))
         refresh = RefreshResult(
-            source="official_xml_latest",
-            ok=bool(history_quality_report(df).get("ok", False)),
-            message="Latest official draw refresh complete.",
+            source="+".join(sources),
+            ok=bool(quality.get("ok", False)),
+            message=message,
             draws_added=max(0, len(df) - before),
             latest_date=latest_date,
         )
@@ -1593,6 +1614,23 @@ def build_quick_dashboard_payload(premium_line_count: int = 5) -> Tuple[Dict[str
     return data, refresh
 
 
+def public_auto_refresh_enabled() -> bool:
+    return os.environ.get("EUROMILLIONS_PUBLIC_AUTO_REFRESH", "1").strip().lower() not in {"0", "false", "no"}
+
+
+def public_auto_refresh_too_soon() -> bool:
+    if PUBLIC_AUTO_REFRESH_MIN_INTERVAL_SECONDS <= 0:
+        return False
+    state = load_refresh_state()
+    last_attempt = parse_utc_timestamp(state.get("last_attempt_at"))
+    if last_attempt is None:
+        return False
+    if last_attempt.tzinfo is None:
+        last_attempt = last_attempt.replace(tzinfo=dt.timezone.utc)
+    age = dt.datetime.now(dt.timezone.utc) - last_attempt
+    return age.total_seconds() < PUBLIC_AUTO_REFRESH_MIN_INTERVAL_SECONDS
+
+
 def load_public_history_snapshot() -> Tuple[pd.DataFrame, RefreshResult]:
     try:
         df = load_local_history()
@@ -1609,8 +1647,26 @@ def load_public_history_snapshot() -> Tuple[pd.DataFrame, RefreshResult]:
 def build_dashboard_payload(premium_line_count: int = 5, allow_refresh: bool = False) -> Dict[str, object]:
     if not allow_refresh:
         cached = load_dashboard_cache(premium_line_count=premium_line_count)
-        if cached is None:
-            cached = load_dashboard_cache(premium_line_count=premium_line_count, allow_stale=True)
+        if cached is not None:
+            data, refresh, generated_at = cached
+            return {
+                "data": data,
+                "refresh": refresh_to_dict(refresh),
+                "generated_at": generated_at,
+                "cache_used": True,
+            }
+        if public_auto_refresh_enabled() and not public_auto_refresh_too_soon():
+            try:
+                data, refresh = build_and_store_latest_official_cache(premium_line_count=premium_line_count)
+                return {
+                    "data": data,
+                    "refresh": refresh_to_dict(refresh),
+                    "generated_at": utc_now_iso(),
+                    "cache_used": False,
+                }
+            except Exception:
+                logger.exception("Public auto-refresh failed; trying stale dashboard cache")
+        cached = load_dashboard_cache(premium_line_count=premium_line_count, allow_stale=True)
         if cached is not None:
             data, refresh, generated_at = cached
             return {

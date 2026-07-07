@@ -118,6 +118,7 @@ class EuroMillionsCoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.configure_temp_runtime(Path(tmp))
             with (
+                mock.patch.dict("os.environ", {"EUROMILLIONS_PUBLIC_AUTO_REFRESH": "0"}),
                 mock.patch.object(euro, "fetch_official_xml", side_effect=AssertionError("public payload must not fetch online")) as official,
                 mock.patch.object(euro, "fetch_missing_backfill") as backfill,
             ):
@@ -185,6 +186,7 @@ class EuroMillionsCoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.configure_temp_runtime(Path(tmp))
             with (
+                mock.patch.dict("os.environ", {"EUROMILLIONS_PUBLIC_AUTO_REFRESH": "0"}),
                 mock.patch.object(euro, "fetch_official_xml", side_effect=AssertionError("public route must not fetch online")) as official,
                 mock.patch.object(euro, "fetch_missing_backfill") as backfill,
             ):
@@ -237,6 +239,7 @@ class EuroMillionsCoreTests(unittest.TestCase):
             }
 
             with (
+                mock.patch.dict("os.environ", {"EUROMILLIONS_PUBLIC_AUTO_REFRESH": "0"}),
                 mock.patch.object(euro, "fetch_official_xml", side_effect=AssertionError("public payload must not fetch online")) as official_fetch,
                 mock.patch.object(euro, "fetch_backfill_draw", return_value=missing_draw) as quick_backfill,
                 mock.patch.object(euro, "fetch_missing_backfill") as full_backfill,
@@ -248,6 +251,77 @@ class EuroMillionsCoreTests(unittest.TestCase):
             quick_backfill.assert_not_called()
             self.assertEqual(payload["refresh"]["source"], "local_cache")
             self.assertEqual(payload["data"]["history_end"], "2026-06-02")
+
+    def test_public_payload_auto_refreshes_when_cache_expired(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            official = self.configure_temp_runtime(Path(tmp))
+
+            with (
+                mock.patch.dict("os.environ", {"EUROMILLIONS_PUBLIC_AUTO_REFRESH": "1"}),
+                mock.patch.object(euro, "public_auto_refresh_too_soon", return_value=False),
+                mock.patch.object(euro, "build_and_store_latest_official_cache", return_value=({"target_seed": "new", "history_end": "2026-06-09"}, euro.RefreshResult(
+                    source="official_xml_latest",
+                    ok=True,
+                    message="Latest official draw refresh complete.",
+                    draws_added=len(official),
+                    latest_date="2026-06-09",
+                ))) as builder,
+            ):
+                payload = euro.build_dashboard_payload(premium_line_count=5)
+
+            builder.assert_called_once_with(premium_line_count=5)
+            self.assertFalse(payload["cache_used"])
+            self.assertEqual(payload["data"]["history_end"], "2026-06-09")
+
+    def test_latest_official_cache_quick_backfills_recent_missing_draws(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = Path(tmp)
+            baseline = Path(__file__).with_name("euromillions_export_2026-06-02.csv")
+            temp_baseline = temp_dir / baseline.name
+            self.write_baseline_through(temp_baseline, "2026-06-02")
+
+            euro.LOCAL_HISTORY = app_module.euro.LOCAL_HISTORY = temp_dir / "euromillions_history_live.csv"
+            euro.BASELINE_HISTORY = app_module.euro.BASELINE_HISTORY = temp_baseline
+            euro.USER_ORIGINAL = app_module.euro.USER_ORIGINAL = temp_dir / "euromillions_export_2026-03-16.csv"
+            euro.REFRESH_STATE_FILE = app_module.euro.REFRESH_STATE_FILE = temp_dir / "euromillions_refresh_state.json"
+            euro.DASHBOARD_CACHE = app_module.euro.DASHBOARD_CACHE = temp_dir / "euromillions_dashboard_payload.json"
+
+            official = euro.standardize_columns(pd.DataFrame([{
+                "draw_date": "2026-06-09",
+                "draw_number": "1953",
+                "ball_1": 2,
+                "ball_2": 7,
+                "ball_3": 23,
+                "ball_4": 44,
+                "ball_5": 46,
+                "lucky_star_1": 3,
+                "lucky_star_2": 5,
+                "source": "official_xml",
+            }]))
+            missing_draw = {
+                "draw_date": "2026-06-05",
+                "draw_number": "1952",
+                "ball_1": 5,
+                "ball_2": 6,
+                "ball_3": 16,
+                "ball_4": 17,
+                "ball_5": 49,
+                "lucky_star_1": 2,
+                "lucky_star_2": 12,
+                "source": "national_lottery_com_backfill",
+            }
+
+            with (
+                mock.patch.object(euro, "fetch_official_xml", return_value=official),
+                mock.patch.object(euro, "fetch_backfill_draw", return_value=missing_draw) as quick_backfill,
+            ):
+                data, refresh = euro.build_and_store_latest_official_cache()
+
+            quick_backfill.assert_called_once()
+            self.assertEqual(refresh.draws_added, 2)
+            self.assertIn("national_lottery_com_quick_backfill", refresh.source)
+            self.assertEqual(data["history_end"], "2026-06-09")
+            self.assertTrue(euro.history_quality_report(euro.load_local_history())["ok"])
 
     def test_public_downloads_use_local_history_without_online_fetch(self):
         with tempfile.TemporaryDirectory() as tmp:
