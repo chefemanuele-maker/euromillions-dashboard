@@ -35,6 +35,13 @@ def cron_refresh_too_soon() -> bool:
     min_interval = int(os.environ.get("CRON_REFRESH_MIN_INTERVAL_SECONDS", "1200"))
     if min_interval <= 0:
         return False
+    try:
+        quality = euro.history_quality_report(euro.load_local_history())
+        if not quality.get("ok", False):
+            return False
+    except Exception:
+        app.logger.exception("Cron quality pre-check failed; allowing refresh")
+        return False
     state = euro.load_refresh_state()
     last_attempt = euro.parse_utc_timestamp(state.get("last_attempt_at"))
     if last_attempt is None:

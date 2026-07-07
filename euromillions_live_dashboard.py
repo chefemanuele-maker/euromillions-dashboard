@@ -2184,20 +2184,22 @@ try:
         try:
             min_interval = int(os.environ.get("CRON_REFRESH_MIN_INTERVAL_SECONDS", "1200"))
             if min_interval > 0:
-                state = load_refresh_state()
-                last_attempt = parse_utc_timestamp(state.get("last_attempt_at"))
-                if last_attempt is not None:
-                    if last_attempt.tzinfo is None:
-                        last_attempt = last_attempt.replace(tzinfo=dt.timezone.utc)
-                    age = dt.datetime.now(dt.timezone.utc) - last_attempt
-                    if age.total_seconds() < min_interval:
-                        return jsonify({
-                            "ok": True,
-                            "skipped": True,
-                            "message": "Refresh skipped because the previous attempt was recent.",
-                            "last_attempt_at": state.get("last_attempt_at"),
-                            "latest_date": state.get("latest_date"),
-                        })
+                quality = history_quality_report(load_local_history())
+                if quality.get("ok", False):
+                    state = load_refresh_state()
+                    last_attempt = parse_utc_timestamp(state.get("last_attempt_at"))
+                    if last_attempt is not None:
+                        if last_attempt.tzinfo is None:
+                            last_attempt = last_attempt.replace(tzinfo=dt.timezone.utc)
+                        age = dt.datetime.now(dt.timezone.utc) - last_attempt
+                        if age.total_seconds() < min_interval:
+                            return jsonify({
+                                "ok": True,
+                                "skipped": True,
+                                "message": "Refresh skipped because the previous attempt was recent.",
+                                "last_attempt_at": state.get("last_attempt_at"),
+                                "latest_date": state.get("latest_date"),
+                            })
 
             data, refresh = build_and_store_latest_official_cache()
             df = load_local_history()
